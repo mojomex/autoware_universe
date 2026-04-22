@@ -62,6 +62,7 @@ struct BenchmarkOptions
     ament_index_cpp::get_package_share_directory("autoware_tensorrt_plugins") +
     "/plugins/libautoware_tensorrt_plugins.so";
   std::string csv_output_path{};
+  std::string prediction_dump_prefix{};
   std::string trt_precision{"fp16"};
   std::string filter_output_format{};
   std::vector<std::string> filter_classes{"drivable_surface"};
@@ -97,6 +98,8 @@ std::string usage(const char * program_name)
       << "  --warmup <count>          Warmup iterations (default: 20)\n"
       << "  --iterations <count>      Measured iterations (default: 100)\n"
       << "  --csv <path>              Optional CSV output path\n"
+      << "  --prediction-dump-prefix <path>\n"
+      << "                            Optional prefix for raw label/probability dumps\n"
       << "  --no-segmented            Disable segmented output\n"
       << "  --visualization           Enable visualization output\n"
       << "  --filtered                Enable filtered output\n"
@@ -134,6 +137,8 @@ BenchmarkOptions parseArguments(int argc, char ** argv)
       options.measured_iterations = std::stoi(require_value("--iterations"));
     } else if (arg == "--csv") {
       options.csv_output_path = require_value("--csv");
+    } else if (arg == "--prediction-dump-prefix") {
+      options.prediction_dump_prefix = require_value("--prediction-dump-prefix");
     } else if (arg == "--no-segmented") {
       options.publish_segmented = false;
     } else if (arg == "--visualization") {
@@ -331,6 +336,77 @@ void writeCsv(
   }
 }
 
+void writeBinaryFile(const std::filesystem::path & path, const void * data, std::size_t size_bytes)
+{
+  std::ofstream stream(path, std::ios::binary);
+  if (!stream.is_open()) {
+    throw std::runtime_error("Failed to open binary output path: " + path.string());
+  }
+
+  if (size_bytes > 0U) {
+    stream.write(reinterpret_cast<const char *>(data), static_cast<std::streamsize>(size_bytes));
+  }
+  if (!stream.good()) {
+    throw std::runtime_error("Failed to write binary output path: " + path.string());
+  }
+}
+
+std::filesystem::path makePredictionDumpBasePath(
+  const std::string & prefix, const std::size_t iteration)
+{
+  std::ostringstream oss;
+  oss << prefix << "_iter" << std::setfill('0') << std::setw(3) << iteration;
+  return std::filesystem::path(oss.str());
+}
+
+void writePredictionDump(
+  const std::string & prefix, const std::size_t iteration, const std::int64_t num_voxels,
+  const std::size_t num_classes, const std::vector<std::int64_t> & pred_labels,
+  const std::vector<float> & pred_probs)
+{
+  if (prefix.empty()) {
+    return;
+  }
+
+  const auto expected_labels = static_cast<std::size_t>(num_voxels);
+  const auto expected_probs = expected_labels * num_classes;
+  if (pred_labels.size() != expected_labels) {
+    throw std::runtime_error("Prediction label dump size does not match num_voxels.");
+  }
+  if (pred_probs.size() != expected_probs) {
+    throw std::runtime_error("Prediction probability dump size does not match metadata.");
+  }
+
+  const auto base_path = makePredictionDumpBasePath(prefix, iteration);
+  if (base_path.has_parent_path()) {
+    std::filesystem::create_directories(base_path.parent_path());
+  }
+
+  writeBinaryFile(
+    base_path.string() + ".labels.bin", pred_labels.data(),
+    pred_labels.size() * sizeof(std::int64_t));
+  writeBinaryFile(
+    base_path.string() + ".probs.bin", pred_probs.data(), pred_probs.size() * sizeof(float));
+
+  const auto meta_path = std::filesystem::path(base_path.string() + ".meta.json");
+  std::ofstream meta_stream(meta_path);
+  if (!meta_stream.is_open()) {
+    throw std::runtime_error("Failed to open prediction metadata path: " + meta_path.string());
+  }
+
+  meta_stream << "{\n"
+              << "  \"iteration\": " << iteration << ",\n"
+              << "  \"num_voxels\": " << num_voxels << ",\n"
+              << "  \"num_classes\": " << num_classes << ",\n"
+              << "  \"labels_file\": \"" << base_path.filename().string() << ".labels.bin\",\n"
+              << "  \"probs_file\": \"" << base_path.filename().string() << ".probs.bin\"\n"
+              << "}\n";
+
+  if (!meta_stream.good()) {
+    throw std::runtime_error("Failed to write prediction metadata path: " + meta_path.string());
+  }
+}
+
 }  // namespace autoware::ptv3
 
 int main(int argc, char ** argv)
@@ -347,6 +423,7 @@ int main(int argc, char ** argv)
   using autoware::ptv3::resolveBagPath;
   using autoware::ptv3::summarize;
   using autoware::ptv3::writeCsv;
+  using autoware::ptv3::writePredictionDump;
 
   try {
     const BenchmarkOptions options = parseArguments(argc, argv);
@@ -376,6 +453,8 @@ int main(int argc, char ** argv)
     std::uint64_t segmented_publish_count = 0;
     std::uint64_t visualization_publish_count = 0;
     std::uint64_t filtered_publish_count = 0;
+    std::vector<std::int64_t> pred_labels_h;
+    std::vector<float> pred_probs_h;
 
     model.setPublishSegmentedPointcloud(
       [&segmented_publish_count](std::unique_ptr<const cuda_blackboard::CudaPointCloud2>) {
@@ -431,6 +510,12 @@ int main(int argc, char ** argv)
         throw std::runtime_error("Measured iteration failed.");
       }
       metrics_per_iteration.push_back(metrics);
+      if (!options.prediction_dump_prefix.empty()) {
+        model.copyLastPredictions(pred_labels_h, pred_probs_h);
+        writePredictionDump(
+          options.prediction_dump_prefix, static_cast<std::size_t>(i), metrics.num_voxels,
+          config.class_names_.size(), pred_labels_h, pred_probs_h);
+      }
     }
 
     if (options.capture_nsys) {
@@ -487,6 +572,9 @@ int main(int argc, char ** argv)
 
     if (!options.csv_output_path.empty()) {
       std::cout << "Wrote CSV metrics to " << options.csv_output_path << '\n';
+    }
+    if (!options.prediction_dump_prefix.empty()) {
+      std::cout << "Wrote prediction dumps using prefix " << options.prediction_dump_prefix << '\n';
     }
 
     rclcpp::shutdown();

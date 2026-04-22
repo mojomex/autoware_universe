@@ -69,6 +69,9 @@ public:
     bool should_publish_segmented_pointcloud, bool should_publish_visualization_pointcloud,
     bool should_publish_filtered_pointcloud, PTv3BenchmarkMetrics & metrics);
 
+  void copyLastPredictions(
+    std::vector<std::int64_t> & pred_labels_h, std::vector<float> & pred_probs_h) const;
+
   void setPublishSegmentedPointcloud(
     std::function<void(std::unique_ptr<const cuda_blackboard::CudaPointCloud2>)> func);
   void setPublishVisualizationPointcloud(

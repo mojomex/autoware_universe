@@ -103,6 +103,55 @@ The `SelectAndPadPlugin` enables conditional selection and padding of tensor ele
 
 - `P`: Fixed output size for padding
 
+## PTv3 optimization assumptions and correctness checks
+
+The current PTv3 deployment path in Autoware exercises the following plugin families:
+
+- `CustomUnique` and `SegmentCSR` inside PTv3 serialized pooling
+- `GetIndicePairs` on the PTv3 stem `SubMConv3d` path
+
+The current optimization work assumes:
+
+- no ONNX operator names or TensorRT plugin contracts change
+- the same bag, params file, ONNX / engine artifacts, and plugin library path are used when
+  comparing baseline and candidate runs
+- plugin changes are validated against both direct reference tests and end-to-end PTv3 prediction
+  dumps
+
+### Direct reference tests
+
+`autoware_tensorrt_plugins` includes a `reference_kernels_test` target for direct plugin
+regression checks used by the PTv3 optimization work.
+
+Run them with:
+
+```bash
+source /opt/ros/humble/setup.bash
+cd /home/maxschmeller/autoware
+colcon test --packages-select autoware_tensorrt_plugins --ctest-args -R reference_kernels_test
+colcon test-result --verbose
+```
+
+### End-to-end PTv3 comparison
+
+For end-to-end validation, capture baseline and candidate prediction dumps with
+`autoware_ptv3_benchmark --prediction-dump-prefix ...` and compare them with:
+
+```bash
+python3 \
+  src/universe/autoware_universe/perception/autoware_ptv3/tools/compare_ptv3_prediction_dump.py \
+  --baseline-prefix /tmp/ptv3-baseline/pred \
+  --candidate-prefix /tmp/ptv3-candidate/pred \
+  --atol 1e-6
+```
+
+The expected acceptance criteria for code-only plugin changes are:
+
+- exact `pred_labels` match
+- exact `num_voxels` match
+- `pred_probs` within a small floating-point tolerance
+- no regression in the direct reference tests above
+
 ## Licenses
 
 ### Multi-Scale Deformable Attention
