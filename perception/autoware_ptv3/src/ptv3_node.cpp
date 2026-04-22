@@ -147,9 +147,11 @@ void PTv3Node::cloudCallback(
   const auto filtered_sub_count = filtered_pointcloud_pub_->get_subscription_count() +
                                   filtered_pointcloud_pub_->get_intra_process_subscription_count();
 
-  if (segmented_sub_count + visualization_sub_count + filtered_sub_count == 0) {
-    return;
-  }
+  // Disabled for profiling and benchmarking: we still want end-to-end inference
+  // even when no output topics currently have subscribers.
+  // if (segmented_sub_count + visualization_sub_count + filtered_sub_count == 0) {
+  //   return;
+  // }
 
   if (stop_watch_ptr_) {
     stop_watch_ptr_->toc("processing/total", true);
