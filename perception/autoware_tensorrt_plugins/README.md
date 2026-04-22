@@ -120,8 +120,10 @@ The current optimization work assumes:
 
 ### Direct reference tests
 
-`autoware_tensorrt_plugins` includes a `reference_kernels_test` target for direct plugin
-regression checks used by the PTv3 optimization work.
+`autoware_tensorrt_plugins` now includes direct CUDA-vs-CPU regression tests for the kernel paths
+used by the PTv3 optimization work:
+
+- `unique` against a CPU reference implementation
 
 Run them with:
 
