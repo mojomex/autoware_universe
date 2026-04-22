@@ -83,8 +83,6 @@ PreprocessCuda::PreprocessCuda(const PTv3Config & config, cudaStream_t stream)
     config_.cloud_capacity_, 0, 64, nullptr);
 
   sort_workspace_d_ = autoware::cuda_utils::make_unique<std::uint8_t[]>(sort_workspace_size_);
-
-  CHECK_CUDA_ERROR(cudaStreamSynchronize(stream_));
 }
 
 template <typename PointT>

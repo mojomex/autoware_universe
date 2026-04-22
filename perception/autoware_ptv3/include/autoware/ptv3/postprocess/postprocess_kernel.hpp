@@ -41,10 +41,12 @@ public:
     const float * input_features, const std::int64_t * pred_labels, const float * pred_probs,
     std::uint8_t * output_points, std::size_t num_classes, std::size_t num_points);
 
-  std::size_t createFilteredPointcloud(
+  void createFilteredPointcloud(
     const void * compact_input_points, CloudFormat input_format, CloudFormat output_format,
     const float * pred_probs, void * output_points, std::size_t num_classes,
     std::size_t num_points);
+
+  std::size_t getFilteredPointCount() const;
 
 private:
   PTv3Config config_;

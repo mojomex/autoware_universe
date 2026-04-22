@@ -207,8 +207,6 @@ PostprocessCuda::PostprocessCuda(const PTv3Config & config, cudaStream_t stream)
       config_.filter_class_indices_.size() * sizeof(std::uint32_t), cudaMemcpyHostToDevice,
       stream_);
   }
-
-  CHECK_CUDA_ERROR(cudaStreamSynchronize(stream_));
 }
 
 void PostprocessCuda::createVisualizationPointcloud(
@@ -220,8 +218,6 @@ void PostprocessCuda::createVisualizationPointcloud(
   createVisualizationPointcloudKernel<<<num_blocks, config_.threads_per_block_, 0, stream_>>>(
     reinterpret_cast<const float4 *>(input_features), color_map_d_.get(), labels,
     reinterpret_cast<float4 *>(output_points), num_points);
-
-  CHECK_CUDA_ERROR(cudaStreamSynchronize(stream_));
 }
 
 void PostprocessCuda::createSegmentationPointcloud(
@@ -233,11 +229,9 @@ void PostprocessCuda::createSegmentationPointcloud(
   createSegmentationPointcloudKernel<<<num_blocks, config_.threads_per_block_, 0, stream_>>>(
     reinterpret_cast<const float4 *>(input_features), pred_labels, pred_probs,
     reinterpret_cast<OutputSegmentationPointType *>(output_points), num_classes, num_points);
-
-  CHECK_CUDA_ERROR(cudaStreamSynchronize(stream_));
 }
 
-std::size_t PostprocessCuda::createFilteredPointcloud(
+void PostprocessCuda::createFilteredPointcloud(
   const void * compact_input_points, CloudFormat input_format, CloudFormat output_format,
   const float * pred_probs, void * output_points, std::size_t num_classes, std::size_t num_points)
 {
@@ -324,12 +318,13 @@ std::size_t PostprocessCuda::createFilteredPointcloud(
     default:
       throw std::runtime_error("Unsupported input point cloud format.");
   }
+}
 
+std::size_t PostprocessCuda::getFilteredPointCount() const
+{
   std::uint32_t num_filtered_points = 0;
-  cudaMemcpyAsync(
-    &num_filtered_points, filtered_mask_d_.get(), sizeof(std::uint32_t), cudaMemcpyDeviceToHost,
-    stream_);
-  CHECK_CUDA_ERROR(cudaStreamSynchronize(stream_));
+  CHECK_CUDA_ERROR(cudaMemcpy(
+    &num_filtered_points, filtered_mask_d_.get(), sizeof(std::uint32_t), cudaMemcpyDeviceToHost));
   return num_filtered_points;
 }
 

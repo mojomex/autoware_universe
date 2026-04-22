@@ -83,11 +83,11 @@ PTv3TRT::PTv3TRT(const tensorrt_common::TrtCommonConfig & trt_config, const PTv3
   stop_watch_ptr_ = std::make_unique<autoware_utils::StopWatch<std::chrono::milliseconds>>();
   stop_watch_ptr_->tic("processing/inner");
 
+  CHECK_CUDA_ERROR(cudaStreamCreate(&stream_));
+
   createPointFields();
   initPtr();
   initTrt(trt_config);
-
-  CHECK_CUDA_ERROR(cudaStreamCreate(&stream_));
 }
 
 void PTv3TRT::setPublishSegmentedPointcloud(
@@ -486,7 +486,6 @@ bool PTv3TRT::preProcess(const std::shared_ptr<const cuda_blackboard::CudaPointC
 bool PTv3TRT::inference()
 {
   auto status = network_trt_ptr_->enqueueV3(stream_);
-  CHECK_CUDA_ERROR(cudaStreamSynchronize(stream_));
 
   if (!status) {
     RCLCPP_ERROR(rclcpp::get_logger("ptv3"), "Fail to enqueue and skip to detect.");
@@ -501,25 +500,46 @@ bool PTv3TRT::postProcess(
   bool should_publish_visualization_pointcloud, bool should_publish_filtered_pointcloud,
   cudaEvent_t postprocess_complete_event)
 {
-  // Segmentation pointcloud
+  bool has_pending_device_work = false;
+
   if (should_publish_segmented_pointcloud) {
     post_ptr_->createSegmentationPointcloud(
       feat_d_.get(), pred_labels_d_.get(), pred_probs_d_.get(),
       segmented_points_msg_ptr_->data.get(), config_.class_names_.size(), num_voxels_);
-    CHECK_CUDA_ERROR(cudaStreamSynchronize(stream_));
+    has_pending_device_work = true;
+  }
 
+  if (should_publish_visualization_pointcloud) {
+    post_ptr_->createVisualizationPointcloud(
+      feat_d_.get(), pred_labels_d_.get(),
+      reinterpret_cast<float *>(visualization_points_msg_ptr_->data.get()), num_voxels_);
+    has_pending_device_work = true;
+  }
+
+  if (should_publish_filtered_pointcloud) {
+    post_ptr_->createFilteredPointcloud(
+      compact_points_d_.get(), input_format_, filtered_output_format_, pred_probs_d_.get(),
+      filtered_points_msg_ptr_->data.get(), config_.class_names_.size(), num_voxels_);
+    has_pending_device_work = true;
+  }
+
+  if (has_pending_device_work) {
+    if (postprocess_complete_event != nullptr) {
+      CHECK_CUDA_ERROR(cudaEventRecord(postprocess_complete_event, stream_));
+    }
+    CHECK_CUDA_ERROR(cudaStreamSynchronize(stream_));
+  } else if (postprocess_complete_event != nullptr) {
+    CHECK_CUDA_ERROR(cudaEventRecord(postprocess_complete_event, stream_));
+  }
+
+  if (should_publish_segmented_pointcloud) {
     segmented_points_msg_ptr_->header = header;
     segmented_points_msg_ptr_->width = num_voxels_;
     publish_segmented_pointcloud_(std::move(segmented_points_msg_ptr_));
     segmented_points_msg_ptr_ = nullptr;
   }
 
-  // Visualization pointcloud
   if (should_publish_visualization_pointcloud) {
-    post_ptr_->createVisualizationPointcloud(
-      feat_d_.get(), pred_labels_d_.get(),
-      reinterpret_cast<float *>(visualization_points_msg_ptr_->data.get()), num_voxels_);
-    CHECK_CUDA_ERROR(cudaStreamSynchronize(stream_));
     visualization_points_msg_ptr_->header = header;
     visualization_points_msg_ptr_->width = num_voxels_;
     publish_visualization_pointcloud_(std::move(visualization_points_msg_ptr_));
@@ -527,19 +547,11 @@ bool PTv3TRT::postProcess(
   }
 
   if (should_publish_filtered_pointcloud) {
-    const auto num_filtered_points = post_ptr_->createFilteredPointcloud(
-      compact_points_d_.get(), input_format_, filtered_output_format_, pred_probs_d_.get(),
-      filtered_points_msg_ptr_->data.get(), config_.class_names_.size(), num_voxels_);
-    CHECK_CUDA_ERROR(cudaStreamSynchronize(stream_));
-
+    const auto num_filtered_points = post_ptr_->getFilteredPointCount();
     filtered_points_msg_ptr_->header = header;
     filtered_points_msg_ptr_->width = num_filtered_points;
     publish_filtered_pointcloud_(std::move(filtered_points_msg_ptr_));
     filtered_points_msg_ptr_ = nullptr;
-  }
-
-  if (postprocess_complete_event != nullptr) {
-    CHECK_CUDA_ERROR(cudaEventRecord(postprocess_complete_event, stream_));
   }
 
   allocateMessages();
