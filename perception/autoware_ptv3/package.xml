@@ -19,8 +19,13 @@
   <depend>autoware_point_types</depend>
   <depend>autoware_tensorrt_common</depend>
   <depend>autoware_utils</depend>
+  <depend>ament_index_cpp</depend>
   <depend>cuda_blackboard</depend>
   <depend>launch_ros</depend>
+  <depend>rosbag2_cpp</depend>
+  <depend>rosbag2_storage</depend>
+  <depend>rosbag2_transport</depend>
+  <depend>sensor_msgs</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
   <depend>tf2_sensor_msgs</depend>

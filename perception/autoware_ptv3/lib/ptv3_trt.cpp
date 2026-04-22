@@ -26,6 +26,7 @@
 #include <sensor_msgs/msg/point_field.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -35,6 +36,46 @@
 
 namespace autoware::ptv3
 {
+
+namespace
+{
+
+class ScopedCudaEvent
+{
+public:
+  ScopedCudaEvent() { CHECK_CUDA_ERROR(cudaEventCreate(&event_)); }
+
+  ~ScopedCudaEvent()
+  {
+    if (event_ != nullptr) {
+      cudaEventDestroy(event_);
+    }
+  }
+
+  ScopedCudaEvent(const ScopedCudaEvent &) = delete;
+  ScopedCudaEvent & operator=(const ScopedCudaEvent &) = delete;
+
+  cudaEvent_t get() const { return event_; }
+
+private:
+  cudaEvent_t event_{nullptr};
+};
+
+double durationMs(
+  const std::chrono::steady_clock::time_point & start,
+  const std::chrono::steady_clock::time_point & end)
+{
+  return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+double elapsedEventMs(cudaEvent_t start, cudaEvent_t end)
+{
+  float elapsed_ms = 0.0f;
+  CHECK_CUDA_ERROR(cudaEventElapsedTime(&elapsed_ms, start, end));
+  return static_cast<double>(elapsed_ms);
+}
+
+}  // namespace
 
 PTv3TRT::PTv3TRT(const tensorrt_common::TrtCommonConfig & trt_config, const PTv3Config & config)
 : config_(config)
@@ -269,6 +310,63 @@ bool PTv3TRT::segment(
   return true;
 }
 
+bool PTv3TRT::benchmarkSegment(
+  const std::shared_ptr<const cuda_blackboard::CudaPointCloud2> & msg_ptr,
+  bool should_publish_segmented_pointcloud, bool should_publish_visualization_pointcloud,
+  bool should_publish_filtered_pointcloud, PTv3BenchmarkMetrics & metrics)
+{
+  metrics = {};
+
+  const auto cpu_total_start = std::chrono::steady_clock::now();
+  if (!preProcess(msg_ptr)) {
+    RCLCPP_ERROR(rclcpp::get_logger("ptv3"), "Pre-process failed. Skipping detection.");
+    return false;
+  }
+  const auto cpu_preprocess_end = std::chrono::steady_clock::now();
+
+  ScopedCudaEvent gpu_total_start;
+  ScopedCudaEvent gpu_inference_start;
+  ScopedCudaEvent gpu_inference_end;
+  ScopedCudaEvent gpu_postprocess_start;
+  ScopedCudaEvent gpu_postprocess_end;
+
+  CHECK_CUDA_ERROR(cudaEventRecord(gpu_total_start.get(), stream_));
+  CHECK_CUDA_ERROR(cudaEventRecord(gpu_inference_start.get(), stream_));
+
+  if (!inference()) {
+    RCLCPP_ERROR(rclcpp::get_logger("ptv3"), "Inference failed. Skipping detection.");
+    return false;
+  }
+
+  CHECK_CUDA_ERROR(cudaEventRecord(gpu_inference_end.get(), stream_));
+  const auto cpu_inference_end = std::chrono::steady_clock::now();
+
+  CHECK_CUDA_ERROR(cudaEventRecord(gpu_postprocess_start.get(), stream_));
+  if (!postProcess(
+        msg_ptr->header, should_publish_segmented_pointcloud,
+        should_publish_visualization_pointcloud, should_publish_filtered_pointcloud,
+        gpu_postprocess_end.get())) {
+    RCLCPP_ERROR(rclcpp::get_logger("ptv3"), "Post-process failed. Skipping detection");
+    return false;
+  }
+  const auto cpu_total_end = std::chrono::steady_clock::now();
+
+  CHECK_CUDA_ERROR(cudaEventSynchronize(gpu_postprocess_end.get()));
+
+  metrics.cpu_preprocess_ms = durationMs(cpu_total_start, cpu_preprocess_end);
+  metrics.cpu_inference_enqueue_ms = durationMs(cpu_preprocess_end, cpu_inference_end);
+  metrics.cpu_postprocess_ms = durationMs(cpu_inference_end, cpu_total_end);
+  metrics.cpu_total_ms = durationMs(cpu_total_start, cpu_total_end);
+
+  metrics.gpu_inference_ms = elapsedEventMs(gpu_inference_start.get(), gpu_inference_end.get());
+  metrics.gpu_postprocess_ms =
+    elapsedEventMs(gpu_postprocess_start.get(), gpu_postprocess_end.get());
+  metrics.gpu_total_ms = elapsedEventMs(gpu_total_start.get(), gpu_postprocess_end.get());
+  metrics.num_voxels = num_voxels_;
+
+  return true;
+}
+
 bool PTv3TRT::preProcess(const std::shared_ptr<const cuda_blackboard::CudaPointCloud2> & msg_ptr)
 {
   using autoware::cuda_utils::clear_async;
@@ -400,7 +498,8 @@ bool PTv3TRT::inference()
 
 bool PTv3TRT::postProcess(
   const std_msgs::msg::Header & header, bool should_publish_segmented_pointcloud,
-  bool should_publish_visualization_pointcloud, bool should_publish_filtered_pointcloud)
+  bool should_publish_visualization_pointcloud, bool should_publish_filtered_pointcloud,
+  cudaEvent_t postprocess_complete_event)
 {
   // Segmentation pointcloud
   if (should_publish_segmented_pointcloud) {
@@ -437,6 +536,10 @@ bool PTv3TRT::postProcess(
     filtered_points_msg_ptr_->width = num_filtered_points;
     publish_filtered_pointcloud_(std::move(filtered_points_msg_ptr_));
     filtered_points_msg_ptr_ = nullptr;
+  }
+
+  if (postprocess_complete_event != nullptr) {
+    CHECK_CUDA_ERROR(cudaEventRecord(postprocess_complete_event, stream_));
   }
 
   allocateMessages();
