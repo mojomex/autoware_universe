@@ -105,6 +105,10 @@ For code-only plugin optimizations, the expected result is:
 This check is complementary to direct plugin reference tests in
 `autoware_tensorrt_plugins`.
 
+If a direct plugin reference test exposes a pre-existing correctness bug in the baseline plugin
+implementation, prefer the direct reference result and treat the historical PTv3 dump as a
+change-detection signal rather than the final oracle.
+
 ## Assumptions / Known limits
 
 This node detects the input pointcloud format automatically on the first received message and

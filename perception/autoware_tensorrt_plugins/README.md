@@ -154,6 +154,11 @@ The expected acceptance criteria for code-only plugin changes are:
 - `pred_probs` within a small floating-point tolerance
 - no regression in the direct reference tests above
 
+If the end-to-end PTv3 dump diverges from the historical baseline while the direct reference tests
+show a pre-existing plugin bug, treat the CPU reference as the source of truth and use the PTv3
+baseline dump only as a change-detection signal. This is relevant for fixes in `CustomUnique`,
+where an incorrect `unique_counts` result can change downstream pooling behavior.
+
 ## Licenses
 
 ### Multi-Scale Deformable Attention
