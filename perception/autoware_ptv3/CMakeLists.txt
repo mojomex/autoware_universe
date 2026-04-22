@@ -122,6 +122,14 @@ if(TRT_AVAIL AND CUDA_AVAIL)
     ${PROJECT_NAME}_lib
   )
 
+  ament_auto_add_executable(${PROJECT_NAME}_benchmark
+    src/ptv3_benchmark.cpp
+  )
+
+  target_link_libraries(${PROJECT_NAME}_benchmark
+    ${PROJECT_NAME}_lib
+  )
+
   rclcpp_components_register_node(${PROJECT_NAME}_component
     PLUGIN "autoware::ptv3::PTv3Node"
     EXECUTABLE ${PROJECT_NAME}_node
