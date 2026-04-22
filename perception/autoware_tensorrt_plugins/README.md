@@ -124,6 +124,7 @@ The current optimization work assumes:
 used by the PTv3 optimization work:
 
 - `unique` against a CPU reference implementation
+- `segment_csr` (`mean` and `max`) against CPU reference implementations
 
 Run them with:
 
