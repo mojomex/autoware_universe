@@ -14,20 +14,29 @@
 
 #include "yabloc_pose_initializer/camera/camera_pose_initializer.hpp"
 
-#include <lanelet2_extension/utility/message_conversion.hpp>
-#include <lanelet2_extension/utility/query.hpp>
-#include <lanelet2_extension/utility/utilities.hpp>
+#include <autoware/lanelet2_utils/conversion.hpp>
+#include <autoware/lanelet2_utils/geometry.hpp>
+#include <autoware/lanelet2_utils/nn_search.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 
-#include <cv_bridge/cv_bridge.h>
+#include <memory>
+#include <string>
+#include <vector>
+
+#if __has_include(<cv_bridge/cv_bridge.hpp>)
+#include <cv_bridge/cv_bridge.hpp>  // for ROS 2 Jazzy or newer
+#else
+#include <cv_bridge/cv_bridge.h>  // for ROS 2 Humble or older
+#endif
 
 #include <filesystem>
 
 namespace yabloc
 {
-CameraPoseInitializer::CameraPoseInitializer()
-: Node("camera_pose_initializer"), angle_resolution_(declare_parameter<int>("angle_resolution"))
+CameraPoseInitializer::CameraPoseInitializer(const rclcpp::NodeOptions & options)
+: Node("camera_pose_initializer", options),
+  angle_resolution_(static_cast<int>(declare_parameter<int>("angle_resolution")))
 {
   using std::placeholders::_1;
   using std::placeholders::_2;
@@ -40,7 +49,7 @@ CameraPoseInitializer::CameraPoseInitializer()
   // Subscriber
   auto on_map = std::bind(&CameraPoseInitializer::on_map, this, _1);
   auto on_image = [this](Image::ConstSharedPtr msg) -> void { latest_image_msg_ = msg; };
-  sub_map_ = create_subscription<HADMapBin>("~/input/vector_map", map_qos, on_map);
+  sub_map_ = create_subscription<LaneletMapBin>("~/input/vector_map", map_qos, on_map);
   sub_image_ = create_subscription<Image>("~/input/image_raw", 10, on_image);
 
   // Server
@@ -57,7 +66,7 @@ CameraPoseInitializer::CameraPoseInitializer()
   }
 }
 
-cv::Mat bitwise_and_3ch(const cv::Mat src1, const cv::Mat src2)
+cv::Mat bitwise_and_3ch(const cv::Mat & src1, const cv::Mat & src2)
 {
   std::vector<cv::Mat> src1_array;
   std::vector<cv::Mat> src2_array;
@@ -74,7 +83,7 @@ cv::Mat bitwise_and_3ch(const cv::Mat src1, const cv::Mat src2)
   return merged;
 }
 
-int count_non_zero(cv::Mat image_3ch)
+int count_non_zero(const cv::Mat & image_3ch)
 {
   std::vector<cv::Mat> images;
   cv::split(image_3ch, images);
@@ -123,10 +132,13 @@ std::optional<double> CameraPoseInitializer::estimate_pose(
   query_pose.position.y = position.y();
   query_pose.position.z = position.z();
 
-  lanelet::ConstLanelets current_lanelets;
   std::optional<double> lane_angle_rad = std::nullopt;
-  if (lanelet::utils::query::getCurrentLanelets(const_lanelets_, query_pose, &current_lanelets)) {
-    lane_angle_rad = lanelet::utils::getLaneletAngle(current_lanelets.front(), query_pose.position);
+  if (const auto current_lanelet_opt =
+        autoware::experimental::lanelet2_utils::get_closest_lanelet(const_lanelets_, query_pose);
+      current_lanelet_opt) {
+    lane_angle_rad = autoware::experimental::lanelet2_utils::get_lanelet_angle(
+      current_lanelet_opt.value(),
+      autoware::experimental::lanelet2_utils::from_ros(query_pose.position).basicPoint());
   }
 
   cv::Mat projected_image = projector_module_->project_image(segmented_image);
@@ -148,13 +160,13 @@ std::optional<double> CameraPoseInitializer::estimate_pose(
     // consider lanelet direction
     float gain = 1;
     if (lane_angle_rad) {
-      gain = 2 + std::cos((lane_angle_rad.value() - angle_rad) / 2.0);
+      gain = static_cast<float>(2 + std::cos((lane_angle_rad.value() - angle_rad) / 2.0));
     }
     // If count_non_zero() returns 0 everywhere, the orientation is chosen by the only gain
-    const float score = gain * (1 + count_non_zero(dst));
+    const float score = gain * static_cast<float>(1 + count_non_zero(dst));
 
     scores.push_back(score);
-    angles_rad.push_back(angle_rad);
+    angles_rad.push_back(static_cast<float>(angle_rad));
   }
 
   marker_module_->publish_marker(scores, angles_rad, position);
@@ -164,14 +176,14 @@ std::optional<double> CameraPoseInitializer::estimate_pose(
   return angles_rad.at(max_index);
 }
 
-void CameraPoseInitializer::on_map(const HADMapBin & msg)
+void CameraPoseInitializer::on_map(const LaneletMapBin & msg)
 {
-  lanelet::LaneletMapPtr lanelet_map(new lanelet::LaneletMap);
-  lanelet::utils::conversion::fromBinMsg(msg, lanelet_map);
+  lanelet::LaneletMapPtr lanelet_map = autoware::experimental::lanelet2_utils::remove_const(
+    autoware::experimental::lanelet2_utils::from_autoware_map_msgs(msg));
   lane_image_ = std::make_unique<LaneImage>(lanelet_map);
 
   const_lanelets_.clear();
-  for (auto l : lanelet_map->laneletLayer) {
+  for (const auto & l : lanelet_map->laneletLayer) {
     const_lanelets_.push_back(l);
   }
 }
@@ -186,12 +198,16 @@ void CameraPoseInitializer::on_service(
   const auto query_pos = request->pose_with_covariance.pose.pose.position;
   const auto orientation = request->pose_with_covariance.pose.pose.orientation;
   const double yaw_std_rad = std::sqrt(query_pos_with_cov.pose.covariance.at(35));
-  const Eigen::Vector3f pos_vec3f(query_pos.x, query_pos.y, query_pos.z);
+  const Eigen::Vector3f pos_vec3f(
+    static_cast<float>(query_pos.x), static_cast<float>(query_pos.y),
+    static_cast<float>(query_pos.z));
   RCLCPP_INFO_STREAM(get_logger(), "Given initial position " << pos_vec3f.transpose());
 
   // Estimate orientation
   const double initial_yaw_angle_rad = 2 * std::atan2(orientation.z, orientation.w);
   const auto yaw_angle_rad_opt = estimate_pose(pos_vec3f, initial_yaw_angle_rad, yaw_std_rad);
+  // TODO(localization/mapping team): judge reliability of estimate pose
+  response->reliable = true;
   if (yaw_angle_rad_opt.has_value()) {
     response->success = true;
     response->pose_with_covariance =
@@ -216,3 +232,6 @@ CameraPoseInitializer::PoseCovStamped CameraPoseInitializer::create_rectified_in
 }
 
 }  // namespace yabloc
+
+#include <rclcpp_components/register_node_macro.hpp>
+RCLCPP_COMPONENTS_REGISTER_NODE(yabloc::CameraPoseInitializer)

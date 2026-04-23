@@ -19,6 +19,9 @@
 #include <rclcpp/logging.hpp>
 
 #include <queue>
+#include <set>
+#include <unordered_map>
+#include <vector>
 
 namespace yabloc::graph_segment
 {
@@ -37,7 +40,7 @@ std::set<int> SimilarAreaSearcher::search(
 
   for (int h = 0; h < rgb_image.rows; h++) {
     const int * seg_ptr = segmented.ptr<int>(h);
-    const cv::Vec3b * rgb_ptr = rgb_image.ptr<cv::Vec3b>(h);
+    const auto * rgb_ptr = rgb_image.ptr<cv::Vec3b>(h);
 
     for (int w = 0; w < rgb_image.cols; w++) {
       int key = seg_ptr[w];
@@ -55,7 +58,7 @@ std::set<int> SimilarAreaSearcher::search(
   auto compare = [](KeyAndArea a, KeyAndArea b) { return a.count < b.count; };
   std::priority_queue<KeyAndArea, std::vector<KeyAndArea>, decltype(compare)> key_queue{compare};
   for (auto [key, count] : count_map) {
-    key_queue.push({key, count});
+    key_queue.emplace(key, count);
   }
 
   const Eigen::MatrixXf ref_histogram = histogram_map.at(best_road_like_class).eval();
