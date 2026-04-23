@@ -367,6 +367,23 @@ bool PTv3TRT::benchmarkSegment(
   return true;
 }
 
+void PTv3TRT::copyLastPredictions(
+  std::vector<std::int64_t> & pred_labels_h, std::vector<float> & pred_probs_h) const
+{
+  const auto num_points = static_cast<std::size_t>(num_voxels_);
+  const auto num_classes = config_.class_names_.size();
+
+  pred_labels_h.resize(num_points);
+  pred_probs_h.resize(num_points * num_classes);
+
+  CHECK_CUDA_ERROR(cudaMemcpy(
+    pred_labels_h.data(), pred_labels_d_.get(), pred_labels_h.size() * sizeof(std::int64_t),
+    cudaMemcpyDeviceToHost));
+  CHECK_CUDA_ERROR(cudaMemcpy(
+    pred_probs_h.data(), pred_probs_d_.get(), pred_probs_h.size() * sizeof(float),
+    cudaMemcpyDeviceToHost));
+}
+
 bool PTv3TRT::preProcess(const std::shared_ptr<const cuda_blackboard::CudaPointCloud2> & msg_ptr)
 {
   using autoware::cuda_utils::clear_async;

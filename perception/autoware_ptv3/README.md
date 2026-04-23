@@ -61,6 +61,50 @@ The default logging severity level for `autoware_ptv3` is `info`. For debugging 
 ros2 launch autoware_ptv3 ptv3.launch.xml log_level:=debug
 ```
 
+### Benchmark prediction dumps
+
+`autoware_ptv3_benchmark` supports writing raw predictions for regression checks with:
+
+```bash
+ros2 run autoware_ptv3 autoware_ptv3_benchmark \
+  --warmup 0 \
+  --iterations 1 \
+  --prediction-dump-prefix /tmp/ptv3-baseline/pred
+```
+
+This writes one metadata file plus raw `int64` labels and `float32` probabilities per measured
+iteration:
+
+- `/tmp/ptv3-baseline/pred_iter000.meta.json`
+- `/tmp/ptv3-baseline/pred_iter000.labels.bin`
+- `/tmp/ptv3-baseline/pred_iter000.probs.bin`
+
+The dump is intended for plugin/runtime validation with the same:
+
+- bag input
+- params file
+- ONNX / engine artifacts
+- plugin shared library path
+
+To compare a baseline dump against a candidate build, run:
+
+```bash
+python3 \
+  src/universe/autoware_universe/perception/autoware_ptv3/tools/compare_ptv3_prediction_dump.py \
+  --baseline-prefix /tmp/ptv3-baseline/pred \
+  --candidate-prefix /tmp/ptv3-candidate/pred \
+  --atol 1e-6
+```
+
+For code-only plugin optimizations, the expected result is:
+
+- exact `pred_labels` match
+- exact `num_voxels` match
+- `pred_probs` max absolute difference within a small floating-point tolerance
+
+This check is complementary to direct plugin reference tests in
+`autoware_tensorrt_plugins`.
+
 ## Assumptions / Known limits
 
 This node detects the input pointcloud format automatically on the first received message and

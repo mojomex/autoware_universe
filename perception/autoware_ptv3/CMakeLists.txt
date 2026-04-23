@@ -144,6 +144,7 @@ if(TRT_AVAIL AND CUDA_AVAIL)
     INSTALL_TO_SHARE
       launch
       config
+      tools
   )
 
 else()
@@ -153,5 +154,6 @@ else()
   ament_auto_package(
     INSTALL_TO_SHARE
       launch
+      tools
   )
 endif()
