@@ -22,19 +22,21 @@
 #include <random>
 #include <vector>
 
-namespace yabloc
+namespace yabloc::modularized_particle_filter::util
 {
-namespace modularized_particle_filter::util
-{
-std::random_device seed_gen;
-std::default_random_engine engine(seed_gen());
+inline std::random_device seed_gen;
+inline std::default_random_engine engine(seed_gen());
 
-Eigen::Vector2d nrand_2d(const Eigen::Matrix2d cov)
+inline Eigen::Vector2d nrand_2d(const Eigen::Matrix2d & cov)
 {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+  // on NVIDIA DRIVE AGX Thor, Eigen triggers a false positive warning
   Eigen::JacobiSVD<Eigen::Matrix2d> svd;
   svd.compute(cov, Eigen::ComputeFullU | Eigen::ComputeFullV);
   Eigen::Vector2d std = svd.singularValues();
   std = std.cwiseMax(0.01);
+#pragma GCC diagnostic pop
 
   std::normal_distribution<> dist(0.0, 1.0);
   Eigen::Vector2d xy;
@@ -50,7 +52,7 @@ T nrand(T std)
   return dist(engine);
 }
 
-double normalize_radian(const double rad, const double min_rad = -M_PI)
+inline double normalize_radian(const double rad, const double min_rad = -M_PI)
 {
   const auto max_rad = min_rad + 2 * M_PI;
 
@@ -63,6 +65,5 @@ double normalize_radian(const double rad, const double min_rad = -M_PI)
   return value - std::copysign(2 * M_PI, value);
 }
 
-}  // namespace modularized_particle_filter::util
-}  // namespace yabloc
+}  // namespace yabloc::modularized_particle_filter::util
 #endif  // YABLOC_PARTICLE_FILTER__COMMON__PREDICTION_UTIL_HPP_
