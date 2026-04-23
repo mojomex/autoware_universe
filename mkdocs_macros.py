@@ -1,4 +1,5 @@
 import json
+import urllib
 
 from tabulate import tabulate
 
@@ -42,6 +43,8 @@ def format_param_range(param):
 def extract_parameter_info(parameters, namespace=""):
     params = []
     for k, v in parameters.items():
+        if "$ref" in v.keys():
+            continue
         if v["type"] != "object":
             param = {}
             param["Name"] = namespace + k
@@ -68,3 +71,8 @@ def define_env(env):
         with open(json_schema_file_path) as f:
             data = json.load(f)
             return format_json(data)
+
+    @env.macro
+    def drawio(image_path):
+        image_url = urllib.parse.quote(f"{env.conf['site_url']}{image_path}", "")
+        return f"https://app.diagrams.net/?lightbox=1#U{image_url}"

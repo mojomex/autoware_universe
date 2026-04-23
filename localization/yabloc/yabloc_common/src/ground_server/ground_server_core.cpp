@@ -17,7 +17,7 @@
 #include "yabloc_common/ground_server/util.hpp"
 
 #include <Eigen/Eigenvalues>
-#include <lanelet2_extension/utility/message_conversion.hpp>
+#include <autoware/lanelet2_utils/conversion.hpp>
 #include <yabloc_common/color.hpp>
 #include <yabloc_common/pub_sub.hpp>
 
@@ -28,22 +28,29 @@
 #include <pcl/sample_consensus/model_types.h>
 #include <pcl/segmentation/sac_segmentation.h>
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <set>
+#include <string>
+#include <vector>
+
 namespace yabloc::ground_server
 {
-GroundServer::GroundServer()
-: Node("ground_server"),
+GroundServer::GroundServer(const rclcpp::NodeOptions & options)
+: Node("ground_server", options),
   force_zero_tilt_(declare_parameter<bool>("force_zero_tilt")),
-  R(declare_parameter<int>("R")),
-  K(declare_parameter<int>("K"))
+  R_(static_cast<float>(declare_parameter<int>("R"))),
+  K_(static_cast<int>(declare_parameter<int>("K")))
 {
   using std::placeholders::_1;
   using std::placeholders::_2;
-  const rclcpp::QoS map_qos = rclcpp::QoS(10).transient_local().reliable();
+  const rclcpp::QoS map_qos = rclcpp::QoS(1).transient_local().reliable();
 
   auto on_pose = std::bind(&GroundServer::on_pose_stamped, this, _1);
   auto on_map = std::bind(&GroundServer::on_map, this, _1);
 
-  sub_map_ = create_subscription<HADMapBin>("~/input/vector_map", map_qos, on_map);
+  sub_map_ = create_subscription<LaneletMapBin>("~/input/vector_map", map_qos, on_map);
   sub_pose_stamped_ = create_subscription<PoseStamped>("~/input/pose", 10, on_pose);
 
   pub_ground_height_ = create_publisher<Float32>("~/output/height", 10);
@@ -100,10 +107,10 @@ void GroundServer::on_pose_stamped(const PoseStamped & msg)
   }
 }
 
-void GroundServer::on_map(const HADMapBin & msg)
+void GroundServer::on_map(const LaneletMapBin & msg)
 {
-  lanelet::LaneletMapPtr lanelet_map(new lanelet::LaneletMap);
-  lanelet::utils::conversion::fromBinMsg(msg, lanelet_map);
+  lanelet::LaneletMapPtr lanelet_map = autoware::experimental::lanelet2_utils::remove_const(
+    autoware::experimental::lanelet2_utils::from_autoware_map_msgs(msg));
 
   // These should be loaded from rosparam
   const std::set<std::string> ground_labels = {
@@ -147,8 +154,8 @@ float GroundServer::estimate_height_simply(const geometry_msgs::msg::Point & poi
 {
   // NOTE: Sometimes it might give not-accurate height
   constexpr float sq_radius = 3.0 * 3.0;
-  const float x = point.x;
-  const float y = point.y;
+  const auto x = static_cast<float>(point.x);
+  const auto y = static_cast<float>(point.y);
 
   float height = std::numeric_limits<float>::infinity();
   for (const auto & p : cloud_->points) {
@@ -186,12 +193,12 @@ std::vector<int> GroundServer::estimate_inliers_by_ransac(const std::vector<int>
 GroundServer::GroundPlane GroundServer::estimate_ground(const Point & point)
 {
   // Because height_filter_ is always initialized, getValue does not return nullopt
-  const float predicted_z = height_filter_.getValue().value();
-  const pcl::PointXYZ xyz(point.x, point.y, predicted_z);
+  const float predicted_z = static_cast<float>(height_filter_.getValue().value());
+  const pcl::PointXYZ xyz(static_cast<float>(point.x), static_cast<float>(point.y), predicted_z);
 
   std::vector<int> raw_indices;
   std::vector<float> distances;
-  kdtree_->nearestKSearch(xyz, K, raw_indices, distances);
+  kdtree_->nearestKSearch(xyz, K_, raw_indices, distances);
 
   std::vector<int> indices = estimate_inliers_by_ransac(raw_indices);
 
@@ -199,14 +206,14 @@ GroundServer::GroundPlane GroundServer::estimate_ground(const Point & point)
   last_indices_ = indices;
 
   // Estimate normal vector using covariance matrix around the target point
-  Eigen::Matrix3f covariance;
-  Eigen::Vector4f centroid;
+  Eigen::Matrix3f covariance = Eigen::Matrix3f::Zero();
+  Eigen::Vector4f centroid = Eigen::Vector4f::Zero();
   pcl::compute3DCentroid(*cloud_, indices, centroid);
   pcl::computeCovarianceMatrix(*cloud_, indices, centroid, covariance);
 
   // NOTE: I forgot why I don't use coefficients computed by SACSegmentation
   Eigen::Vector4f plane_parameter;
-  float curvature;
+  float curvature = NAN;
   pcl::solvePlaneParameters(covariance, centroid, plane_parameter, curvature);
   Eigen::Vector3f normal = plane_parameter.topRows(3).normalized();
 
@@ -229,15 +236,16 @@ GroundServer::GroundPlane GroundServer::estimate_ground(const Point & point)
   const Eigen::Vector3f filt_normal = normal_filter_.update(normal);
 
   GroundPlane plane;
-  plane.xyz = Eigen::Vector3f(point.x, point.y, predicted_z);
+  plane.xyz =
+    Eigen::Vector3f(static_cast<float>(point.x), static_cast<float>(point.y), predicted_z);
   plane.normal = filt_normal;
 
   // Compute z value by intersection of estimated plane and orthogonal line
   {
     Eigen::Vector3f center = centroid.topRows(3);
     float inner = center.dot(plane.normal);
-    float px_nx = point.x * plane.normal.x();
-    float py_ny = point.y * plane.normal.y();
+    float px_nx = static_cast<float>(point.x) * plane.normal.x();
+    float py_ny = static_cast<float>(point.y) * plane.normal.y();
     plane.xyz.z() = (inner - px_nx - py_ny) / plane.normal.z();
   }
 
@@ -248,3 +256,6 @@ GroundServer::GroundPlane GroundServer::estimate_ground(const Point & point)
 }
 
 }  // namespace yabloc::ground_server
+
+#include <rclcpp_components/register_node_macro.hpp>
+RCLCPP_COMPONENTS_REGISTER_NODE(yabloc::ground_server::GroundServer)
