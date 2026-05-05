@@ -36,6 +36,19 @@
 
 namespace nvinfer1::plugin
 {
+namespace
+{
+std::int64_t get_kernel_volume(const PluginTensorDesc & filters_desc)
+{
+  return static_cast<std::int64_t>(filters_desc.dims.d[1]) * filters_desc.dims.d[2] *
+         filters_desc.dims.d[3];
+}
+
+std::int64_t get_mask_int_count(std::int64_t kernel_volume)
+{
+  return (kernel_volume + 31) / 32;
+}
+}  // namespace
 
 ImplicitGemmPlugin::ImplicitGemmPlugin(
   const std::string & name, ImplicitGemmParameters const & params)
@@ -134,9 +147,12 @@ std::int32_t ImplicitGemmPlugin::configurePlugin(
   PLUGIN_ASSERT(out[0].desc.dims.nbDims == 2);
   PLUGIN_ASSERT(
     in[INOUT_FILTERS_INDEX].desc.dims.d[4] == in[INOUT_IN_FEATURES_INDEX].desc.dims.d[1]);
+  const std::int64_t kernel_volume = get_kernel_volume(in[INOUT_FILTERS_INDEX].desc);
+  const std::int64_t mask_int_count = get_mask_int_count(kernel_volume);
   PLUGIN_ASSERT(
-    in[INOUT_PAIR_MASK_FWD_SPLITS_INDEX].desc.dims.d[0] == in[INOUT_PAIR_FWD_INDEX].desc.dims.d[1]);
-  PLUGIN_ASSERT(in[INOUT_PAIR_MASK_FWD_SPLITS_INDEX].desc.dims.d[1] == 1);
+    in[INOUT_PAIR_MASK_FWD_SPLITS_INDEX].desc.dims.d[0] ==
+    in[INOUT_PAIR_FWD_INDEX].desc.dims.d[1]);
+  PLUGIN_ASSERT(in[INOUT_PAIR_MASK_FWD_SPLITS_INDEX].desc.dims.d[1] == mask_int_count);
   PLUGIN_ASSERT(
     in[INOUT_MASK_ARGSORT_FWD_SPLITS_INDEX].desc.dims.d[0] ==
     in[INOUT_PAIR_FWD_INDEX].desc.dims.d[1]);
@@ -221,7 +237,8 @@ std::int32_t ImplicitGemmPlugin::enqueue(
 
   std::int64_t num_act_in = input_desc[INOUT_IN_FEATURES_INDEX].dims.d[0];
   std::int64_t num_in_features = input_desc[INOUT_IN_FEATURES_INDEX].dims.d[1];
-  // std::int64_t kernel_volume = input_desc[INOUT_PAIR_FWD_INDEX].dims.d[0];
+  const std::int64_t kernel_volume = get_kernel_volume(input_desc[INOUT_FILTERS_INDEX]);
+  const std::int64_t mask_int_count = get_mask_int_count(kernel_volume);
   std::int64_t num_act_out = input_desc[INOUT_PAIR_FWD_INDEX].dims.d[1];
   std::int64_t num_out_features = input_desc[INOUT_FILTERS_INDEX].dims.d[0];
 
@@ -251,20 +268,21 @@ std::int32_t ImplicitGemmPlugin::enqueue(
 
   tv::Tensor pair_mask_fwd_splits = tv::from_blob(
     inputs[INOUT_PAIR_MASK_FWD_SPLITS_INDEX],
-    {1, input_desc[INOUT_PAIR_MASK_FWD_SPLITS_INDEX].dims.d[0]}, tv::int32, 0);
+    {
+      input_desc[INOUT_PAIR_MASK_FWD_SPLITS_INDEX].dims.d[0],
+      input_desc[INOUT_PAIR_MASK_FWD_SPLITS_INDEX].dims.d[1],
+    },
+    tv::uint32, 0);
 
   tv::Tensor mask_argsort_fwd_splits = tv::from_blob(
     inputs[INOUT_MASK_ARGSORT_FWD_SPLITS_INDEX],
-    {
-      1,
-      input_desc[INOUT_MASK_ARGSORT_FWD_SPLITS_INDEX].dims.d[0],
-    },
-    tv::int32, 0);
+    {input_desc[INOUT_MASK_ARGSORT_FWD_SPLITS_INDEX].dims.d[0]}, tv::int32, 0);
 
   PLUGIN_ASSERT(
     input_desc[INOUT_PAIR_FWD_INDEX].dims.d[1] ==
     input_desc[INOUT_MASK_ARGSORT_FWD_SPLITS_INDEX].dims.d[0]);
   PLUGIN_ASSERT(input_desc[INOUT_MASK_ARGSORT_FWD_SPLITS_INDEX].dims.nbDims == 1);
+  PLUGIN_ASSERT(input_desc[INOUT_PAIR_MASK_FWD_SPLITS_INDEX].dims.d[1] == mask_int_count);
 
   tv::Tensor out_features = tv::from_blob(outputs[0], {num_act_out, num_out_features}, dtype, 0);
 

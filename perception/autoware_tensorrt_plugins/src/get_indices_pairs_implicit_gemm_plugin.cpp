@@ -37,6 +37,19 @@
 
 namespace nvinfer1::plugin
 {
+namespace
+{
+std::int64_t get_kernel_volume(const std::vector<std::int32_t> & ksize)
+{
+  return std::accumulate(
+    ksize.begin(), ksize.end(), static_cast<std::int64_t>(1), std::multiplies<std::int64_t>());
+}
+
+std::int64_t get_mask_int_count(std::int64_t kernel_volume)
+{
+  return (kernel_volume + 31) / 32;
+}
+}  // namespace
 
 GetIndicesPairsImplicitGemmPlugin::GetIndicesPairsImplicitGemmPlugin(
   const std::string & name, GetIndicesPairsImplicitGemmParameters const & params)
@@ -131,10 +144,11 @@ std::int32_t GetIndicesPairsImplicitGemmPlugin::configurePlugin(
   PLUGIN_ASSERT(out[3].desc.dims.nbDims == 1);
   PLUGIN_ASSERT(out[4].desc.dims.nbDims == 0);
 
-  std::int64_t kernel_volume = 1;
-  for (const std::int64_t ksize : params_.ksize) {
-    kernel_volume *= ksize;
-  }
+  PLUGIN_ASSERT(
+    params_.algo != static_cast<std::int64_t>(tv::gemm::SparseConvAlgo::kMaskSplitImplicitGemm));
+
+  const std::int64_t kernel_volume = get_kernel_volume(params_.ksize);
+  const std::int64_t mask_int_count = get_mask_int_count(kernel_volume);
 
   PLUGIN_ASSERT(in[0].desc.dims.d[1] == 4);  // coords + 1
 
@@ -144,7 +158,7 @@ std::int32_t GetIndicesPairsImplicitGemmPlugin::configurePlugin(
   PLUGIN_ASSERT(out[1].desc.dims.d[0] == kernel_volume);
   PLUGIN_ASSERT(out[1].desc.type == in[0].desc.type);
 
-  PLUGIN_ASSERT(out[2].desc.dims.d[1] == 1);
+  PLUGIN_ASSERT(out[2].desc.dims.d[1] == mask_int_count);
   PLUGIN_ASSERT(out[2].desc.type == in[0].desc.type);
 
   PLUGIN_ASSERT(out[3].desc.type == in[0].desc.type);
@@ -191,11 +205,11 @@ std::int32_t GetIndicesPairsImplicitGemmPlugin::getOutputShapes(
   PLUGIN_ASSERT(num_outputs == 5);
   PLUGIN_ASSERT(inputs[0].nbDims == 2);
 
-  std::int64_t kernel_volume = 1;
+  PLUGIN_ASSERT(
+    params_.algo != static_cast<std::int64_t>(tv::gemm::SparseConvAlgo::kMaskSplitImplicitGemm));
 
-  for (std::size_t i = 0; i < params_.ksize.size(); ++i) {
-    kernel_volume *= params_.ksize[i];
-  }
+  const std::int64_t kernel_volume = get_kernel_volume(params_.ksize);
+  const std::int64_t mask_int_count = get_mask_int_count(kernel_volume);
 
   if (params_.subm) {
     outputs[0] = inputs[0];
@@ -207,7 +221,7 @@ std::int32_t GetIndicesPairsImplicitGemmPlugin::getOutputShapes(
 
     outputs[2].nbDims = 2;
     outputs[2].d[0] = inputs[0].d[0];
-    outputs[2].d[1] = expr_builder.constant(1);
+    outputs[2].d[1] = expr_builder.constant(mask_int_count);
 
     outputs[3].nbDims = 1;
     outputs[3].d[0] = inputs[0].d[0];
@@ -229,7 +243,7 @@ std::int32_t GetIndicesPairsImplicitGemmPlugin::getOutputShapes(
     outputs[2].nbDims = 2;
     outputs[2].d[0] =
       expr_builder.declareSizeTensor(4, *opt_value, *expr_builder.constant(out_indices_num_limit_));
-    outputs[2].d[1] = expr_builder.constant(1);
+    outputs[2].d[1] = expr_builder.constant(mask_int_count);
 
     outputs[3].nbDims = 1;
     outputs[3].d[0] =
@@ -272,6 +286,10 @@ std::int32_t GetIndicesPairsImplicitGemmPlugin::enqueue(
 
   int kernel_volume =
     std::accumulate(params_.ksize.begin(), params_.ksize.end(), 1, std::multiplies<int>());
+  const int mask_int_count = static_cast<int>(get_mask_int_count(kernel_volume));
+
+  PLUGIN_ASSERT(
+    params_.algo != static_cast<std::int64_t>(tv::gemm::SparseConvAlgo::kMaskSplitImplicitGemm));
 
   auto max_act_out_theory = SpconvOps::get_handcrafted_max_act_out(
     input_desc[0].dims.d[0], ksize, stride, padding, dilation);
@@ -284,14 +302,10 @@ std::int32_t GetIndicesPairsImplicitGemmPlugin::enqueue(
   tv::Tensor pair_fwd_padded =
     tv::from_blob(outputs[1], {kernel_volume, pair_fwd_size_padded}, tv::int32, 0);
 
-  bool is_split_mask =
-    params_.algo == static_cast<std::int64_t>(tv::gemm::SparseConvAlgo::kMaskSplitImplicitGemm);
-  int mask_count = is_split_mask ? 2 : 1;
-
   tv::Tensor pair_mask_fwd_padded =
-    tv::from_blob(outputs[2], {mask_count, pair_fwd_size_padded}, tv::int32, 0);
+    tv::from_blob(outputs[2], {1, pair_fwd_size_padded, mask_int_count}, tv::uint32, 0);
   tv::Tensor mask_argsort_fwd_padded =
-    tv::from_blob(outputs[3], {mask_count, pair_fwd_size_padded}, tv::int32, 0);
+    tv::from_blob(outputs[3], {1, pair_fwd_size_padded}, tv::int32, 0);
   tv::Tensor out_indices = tv::from_blob(
     outputs[0], {is_subm ? input_desc[0].dims.d[0] : out_indices_num_limit_, 4}, tv::int32, 0);
   tv::Tensor indices_kernel_num = tv::zeros({kernel_volume}, tv::int32, 0);
@@ -323,8 +337,9 @@ std::int32_t GetIndicesPairsImplicitGemmPlugin::enqueue(
 
   } else {
     tv::Tensor pair_bwd_padded = tv::empty({kernel_volume, static_num_act_in}, tv::int32, 0);
-    tv::Tensor pair_mask_bwd_padded = tv::empty({mask_count, static_num_act_in}, tv::int32, 0);
-    tv::Tensor mask_argsort_bwd_padded = tv::empty({mask_count, static_num_act_in}, tv::int32, 0);
+    tv::Tensor pair_mask_bwd_padded =
+      tv::empty({1, static_num_act_in, mask_int_count}, tv::uint32, 0);
+    tv::Tensor mask_argsort_bwd_padded = tv::empty({1, static_num_act_in}, tv::int32, 0);
 
     ws_tensors.insert({SPCONV_ALLOC_PAIR_FWD, pair_fwd_padded});
     ws_tensors.insert({SPCONV_ALLOC_PAIR_BWD, pair_bwd_padded});
