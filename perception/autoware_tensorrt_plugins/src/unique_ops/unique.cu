@@ -116,6 +116,13 @@ std::size_t align_up(const std::size_t size, const std::size_t alignment)
 
 std::size_t get_unique_temp_storage_size(const std::size_t num_elements)
 {
+  thread_local bool has_cached_temp_size = false;
+  thread_local std::size_t cached_num_elements = 0U;
+  thread_local std::size_t cached_temp_size = 0U;
+  if (has_cached_temp_size && cached_num_elements == num_elements) {
+    return cached_temp_size;
+  }
+
   std::size_t sort_temp_size = 0;
   std::size_t scan_temp_size = 0;
   std::size_t unique_temp_size = 0;
@@ -132,7 +139,10 @@ std::size_t get_unique_temp_storage_size(const std::size_t num_elements)
     nullptr, unique_temp_size, int64_nullptr, int64_nullptr, int64_nullptr, int64_nullptr,
     int64_nullptr, num_elements, nullptr);
 
-  return std::max(sort_temp_size, std::max(scan_temp_size, unique_temp_size));
+  cached_num_elements = num_elements;
+  cached_temp_size = std::max(sort_temp_size, std::max(scan_temp_size, unique_temp_size));
+  has_cached_temp_size = true;
+  return cached_temp_size;
 }
 
 __global__ void mark_run_starts(
