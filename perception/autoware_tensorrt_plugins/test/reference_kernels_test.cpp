@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "autoware/argsort_ops/argsort.hpp"
 #include "autoware/scatter_ops/segment_csr.h"
 #include "autoware/unique_ops/unique.hpp"
 
@@ -202,6 +203,54 @@ void expectFloatVectorsEqual(const std::vector<float> & actual, const std::vecto
   }
 }
 
+std::size_t getArgsortTotalWorkspaceSize(const std::size_t num_elements)
+{
+  const auto temp_size = get_argsort_workspace_size(num_elements);
+  const auto scratch_offset =
+    ((temp_size + alignof(std::int64_t) - 1U) / alignof(std::int64_t)) * alignof(std::int64_t);
+  return scratch_offset + sizeof(std::int64_t) * num_elements;
+}
+
+std::vector<std::int64_t> makeArgsortReference(const std::vector<std::int64_t> & input)
+{
+  std::vector<std::int64_t> indices(input.size());
+  for (std::size_t index = 0; index < input.size(); ++index) {
+    indices[index] = static_cast<std::int64_t>(index);
+  }
+
+  std::stable_sort(
+    indices.begin(), indices.end(),
+    [&input](const std::int64_t lhs, const std::int64_t rhs) { return input[lhs] < input[rhs]; });
+
+  return indices;
+}
+
+TEST(ReferenceKernelsTest, ArgsortMatchesCpuReference)
+{
+  if (getCudaDeviceCount() == 0) {
+    GTEST_SKIP() << "CUDA device not available";
+  }
+
+  const std::vector<std::int64_t> input{7, 3, 7, 5, 3, 3, 9, 5, 11, 7};
+  const auto reference = makeArgsortReference(input);
+
+  CudaStreamGuard stream;
+  DeviceBuffer<std::int64_t> input_d(input.size());
+  DeviceBuffer<std::int64_t> output_d(input.size());
+  DeviceBuffer<std::uint8_t> workspace_d(getArgsortTotalWorkspaceSize(input.size()));
+
+  copyToDevice(input_d.get(), input);
+
+  ASSERT_EQ(
+    argsort(
+      input_d.get(), output_d.get(), workspace_d.get(), input.size(),
+      get_argsort_workspace_size(input.size()), stream.get()),
+    cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream.get()), cudaSuccess);
+
+  EXPECT_EQ(copyToHost(output_d.get(), input.size()), reference);
+}
+
 TEST(ReferenceKernelsTest, UniqueMatchesCpuReference)
 {
   if (getCudaDeviceCount() == 0) {
@@ -216,15 +265,19 @@ TEST(ReferenceKernelsTest, UniqueMatchesCpuReference)
   DeviceBuffer<std::int64_t> unique_d(input.size());
   DeviceBuffer<std::int64_t> inverse_d(input.size());
   DeviceBuffer<std::int64_t> counts_d(input.size());
+  DeviceBuffer<std::int64_t> num_unique_d(1U);
   DeviceBuffer<std::uint8_t> workspace_d(get_unique_workspace_size(input.size()));
 
   copyToDevice(input_d.get(), input);
 
-  const auto num_unique = unique(
-    input_d.get(), unique_d.get(), inverse_d.get(), counts_d.get(), workspace_d.get(),
-    input.size(), workspace_d.size(), stream.get());
+  ASSERT_EQ(
+    unique(
+      input_d.get(), unique_d.get(), inverse_d.get(), counts_d.get(), num_unique_d.get(),
+      workspace_d.get(), input.size(), stream.get()),
+    cudaSuccess);
   ASSERT_EQ(cudaStreamSynchronize(stream.get()), cudaSuccess);
 
+  const auto num_unique = copyToHost(num_unique_d.get(), 1U).front();
   const auto unique_values = copyToHost(unique_d.get(), static_cast<std::size_t>(num_unique));
   const auto inverse_indices = copyToHost(inverse_d.get(), input.size());
   const auto counts = copyToHost(counts_d.get(), static_cast<std::size_t>(num_unique));

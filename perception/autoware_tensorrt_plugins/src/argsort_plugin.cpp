@@ -183,8 +183,10 @@ std::size_t ArgsortPlugin::getWorkspaceSize(
   [[maybe_unused]] std::int32_t num_outputs) const noexcept
 {
   std::int64_t max_num_elements = inputs[0].max.d[0];
-  return get_argsort_workspace_size(max_num_elements) +
-         sizeof(std::int64_t) * 2 * (max_num_elements + 1);
+  const auto temp_size = get_argsort_workspace_size(max_num_elements);
+  const auto scratch_offset =
+    ((temp_size + alignof(std::int64_t) - 1U) / alignof(std::int64_t)) * alignof(std::int64_t);
+  return scratch_offset + sizeof(std::int64_t) * max_num_elements;
 }
 
 }  // namespace nvinfer1::plugin

@@ -164,19 +164,11 @@ std::int32_t UniquePlugin::enqueue(
   cudaStream_t stream) noexcept
 {
   std::int64_t num_elements = input_desc[0].dims.d[0];
-
-  std::int64_t num_unique_elements = unique(
+  return unique(
     reinterpret_cast<const std::int64_t *>(inputs[0]), reinterpret_cast<std::int64_t *>(outputs[0]),
     reinterpret_cast<std::int64_t *>(outputs[1]), reinterpret_cast<std::int64_t *>(outputs[2]),
-    workspace, num_elements, workspace_size_, stream);
-
-  cudaMemcpyAsync(
-    reinterpret_cast<std::int64_t *>(outputs[3]), &num_unique_elements, sizeof(std::int64_t),
-    cudaMemcpyHostToDevice, stream);
-
-  cudaStreamSynchronize(stream);
-
-  return 0;
+    reinterpret_cast<std::int64_t *>(outputs[3]), workspace,
+    static_cast<std::size_t>(num_elements), stream);
 }
 
 std::int32_t UniquePlugin::onShapeChange(
