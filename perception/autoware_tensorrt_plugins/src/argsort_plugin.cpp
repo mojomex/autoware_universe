@@ -61,11 +61,7 @@ IPluginCapability * ArgsortPlugin::getCapabilityInterface(PluginCapabilityType t
 IPluginV3 * ArgsortPlugin::clone() noexcept
 {
   try {
-    IPluginV3 * const plugin{new ArgsortPlugin{layer_name_}};
-    auto * typed_plugin = static_cast<ArgsortPlugin *>(plugin);
-    typed_plugin->argsort_workspace_size_ = argsort_workspace_size_;
-    typed_plugin->max_num_elements_ = max_num_elements_;
-    return plugin;
+    return new ArgsortPlugin{layer_name_};
   } catch (std::exception const & e) {
     caughtError(e);
   }
@@ -103,9 +99,6 @@ std::int32_t ArgsortPlugin::configurePlugin(
   PLUGIN_ASSERT(out[0].desc.dims.nbDims == 1);
 
   PLUGIN_ASSERT(out[0].desc.type == in[0].desc.type);
-
-  max_num_elements_ = static_cast<std::size_t>(in[0].max.d[0]);
-  argsort_workspace_size_ = get_argsort_workspace_size(max_num_elements_);
 
   return 0;
 }
@@ -155,10 +148,11 @@ std::int32_t ArgsortPlugin::enqueue(
   cudaStream_t stream) noexcept
 {
   const auto num_elements = static_cast<std::size_t>(input_desc[0].dims.d[0]);
+  const auto argsort_workspace_size = get_argsort_workspace_size(num_elements);
 
   return argsort(
     reinterpret_cast<std::int64_t const *>(inputs[0]), reinterpret_cast<std::int64_t *>(outputs[0]),
-    workspace, num_elements, argsort_workspace_size_, stream);
+    workspace, num_elements, argsort_workspace_size, stream);
 }
 
 std::int32_t ArgsortPlugin::onShapeChange(
