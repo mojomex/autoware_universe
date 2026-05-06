@@ -310,8 +310,8 @@ TEST(ReferenceKernelsTest, SegmentCsrMeanMatchesCpuReference)
 
   ASSERT_EQ((
     segment_csr_launch<float, MEAN>(
-      src_d.get(), {static_cast<std::int32_t>(rows), static_cast<std::int32_t>(cols)},
-      indptr_d.get(), {static_cast<std::int32_t>(indptr.size())},
+      src_d.get(), static_cast<std::int32_t>(rows), static_cast<std::int32_t>(cols),
+      indptr_d.get(), static_cast<std::int32_t>(indptr.size()),
       std::make_tuple(out_d.get(), static_cast<std::int64_t *>(nullptr)),
       stream.get())),
     0);
@@ -343,8 +343,8 @@ TEST(ReferenceKernelsTest, SegmentCsrMaxMatchesCpuReference)
 
   ASSERT_EQ((
     segment_csr_launch<float, MAX>(
-      src_d.get(), {static_cast<std::int32_t>(rows), static_cast<std::int32_t>(cols)},
-      indptr_d.get(), {static_cast<std::int32_t>(indptr.size())},
+      src_d.get(), static_cast<std::int32_t>(rows), static_cast<std::int32_t>(cols),
+      indptr_d.get(), static_cast<std::int32_t>(indptr.size()),
       std::make_tuple(out_d.get(), static_cast<std::int64_t *>(nullptr)),
       stream.get())),
     0);
