@@ -66,13 +66,6 @@ cudaError_t argsort(
 
 std::size_t get_argsort_workspace_size(std::size_t num_elements)
 {
-  thread_local bool has_cached_temp_size = false;
-  thread_local std::size_t cached_num_elements = 0U;
-  thread_local std::size_t cached_temp_size = 0U;
-  if (has_cached_temp_size && cached_num_elements == num_elements) {
-    return cached_temp_size;
-  }
-
   std::size_t temp_size = 0;
 
   std::int64_t * int64_nullptr = nullptr;
@@ -81,8 +74,5 @@ std::size_t get_argsort_workspace_size(std::size_t num_elements)
     nullptr, temp_size, int64_nullptr, int64_nullptr, int64_nullptr, int64_nullptr, num_elements, 0,
     64, nullptr);
 
-  cached_num_elements = num_elements;
-  cached_temp_size = temp_size;
-  has_cached_temp_size = true;
   return temp_size;
 }

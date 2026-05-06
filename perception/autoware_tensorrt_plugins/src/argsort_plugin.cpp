@@ -20,6 +20,7 @@
 #include <NvInferRuntime.h>
 #include <NvInferRuntimePlugin.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -34,9 +35,25 @@ ArgsortPlugin::ArgsortPlugin(const std::string & name) noexcept : layer_name_{na
   initFieldsToSerialize();
 }
 
+ArgsortPlugin::ArgsortPlugin(const std::string & name, const std::int64_t max_num_elements) noexcept
+: layer_name_{name}
+{
+  updateMaxNumElements(max_num_elements);
+  initFieldsToSerialize();
+}
+
+void ArgsortPlugin::updateMaxNumElements(const std::int64_t max_num_elements) noexcept
+{
+  max_num_elements_ = std::max(max_num_elements_, max_num_elements);
+  max_temp_storage_size_ =
+    get_argsort_workspace_size(static_cast<std::size_t>(std::max<std::int64_t>(max_num_elements_, 0)));
+}
+
 void ArgsortPlugin::initFieldsToSerialize()
 {
   data_to_serialize_.clear();
+  data_to_serialize_.emplace_back(
+    "max_num_elements", &max_num_elements_, PluginFieldType::kINT64, 1);
   fc_to_serialize_.nbFields = data_to_serialize_.size();
   fc_to_serialize_.fields = data_to_serialize_.data();
 }
@@ -61,7 +78,7 @@ IPluginCapability * ArgsortPlugin::getCapabilityInterface(PluginCapabilityType t
 IPluginV3 * ArgsortPlugin::clone() noexcept
 {
   try {
-    return new ArgsortPlugin{layer_name_};
+    return new ArgsortPlugin{layer_name_, max_num_elements_};
   } catch (std::exception const & e) {
     caughtError(e);
   }
@@ -99,6 +116,8 @@ std::int32_t ArgsortPlugin::configurePlugin(
   PLUGIN_ASSERT(out[0].desc.dims.nbDims == 1);
 
   PLUGIN_ASSERT(out[0].desc.type == in[0].desc.type);
+
+  updateMaxNumElements(in[0].max.d[0]);
 
   return 0;
 }
@@ -148,11 +167,10 @@ std::int32_t ArgsortPlugin::enqueue(
   cudaStream_t stream) noexcept
 {
   const auto num_elements = static_cast<std::size_t>(input_desc[0].dims.d[0]);
-  const auto argsort_workspace_size = get_argsort_workspace_size(num_elements);
 
   return argsort(
     reinterpret_cast<std::int64_t const *>(inputs[0]), reinterpret_cast<std::int64_t *>(outputs[0]),
-    workspace, num_elements, argsort_workspace_size, stream);
+    workspace, num_elements, max_temp_storage_size_, stream);
 }
 
 std::int32_t ArgsortPlugin::onShapeChange(

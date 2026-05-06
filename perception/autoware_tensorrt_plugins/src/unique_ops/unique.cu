@@ -114,15 +114,8 @@ std::size_t align_up(const std::size_t size, const std::size_t alignment)
   return ((size + alignment - 1U) / alignment) * alignment;
 }
 
-std::size_t get_unique_temp_storage_size(const std::size_t num_elements)
+std::size_t query_unique_temp_storage_size(const std::size_t num_elements)
 {
-  thread_local bool has_cached_temp_size = false;
-  thread_local std::size_t cached_num_elements = 0U;
-  thread_local std::size_t cached_temp_size = 0U;
-  if (has_cached_temp_size && cached_num_elements == num_elements) {
-    return cached_temp_size;
-  }
-
   std::size_t sort_temp_size = 0;
   std::size_t scan_temp_size = 0;
   std::size_t unique_temp_size = 0;
@@ -139,10 +132,7 @@ std::size_t get_unique_temp_storage_size(const std::size_t num_elements)
     nullptr, unique_temp_size, int64_nullptr, int64_nullptr, int64_nullptr, int64_nullptr,
     int64_nullptr, num_elements, nullptr);
 
-  cached_num_elements = num_elements;
-  cached_temp_size = std::max(sort_temp_size, std::max(scan_temp_size, unique_temp_size));
-  has_cached_temp_size = true;
-  return cached_temp_size;
+  return std::max(sort_temp_size, std::max(scan_temp_size, unique_temp_size));
 }
 
 __global__ void mark_run_starts(
@@ -198,16 +188,20 @@ __global__ void write_unique_counts(
 
 }  // namespace
 
+std::size_t get_unique_temp_storage_size(std::size_t num_elements)
+{
+  return query_unique_temp_storage_size(num_elements);
+}
+
 cudaError_t unique(
   const std::int64_t * input, std::int64_t * unique, std::int64_t * inverse_indices,
   std::int64_t * unique_counts, std::int64_t * num_unique, void * workspace,
-  std::size_t num_input_elements, cudaStream_t stream)
+  std::size_t num_input_elements, std::size_t temp_storage_size, cudaStream_t stream)
 {
   if (num_input_elements == 0U) {
     return cudaMemsetAsync(num_unique, 0, sizeof(std::int64_t), stream);
   }
 
-  std::size_t temp_storage_size = get_unique_temp_storage_size(num_input_elements);
   const auto scratch_offset = align_up(temp_storage_size, alignof(std::int64_t));
   auto * scratch = reinterpret_cast<char *>(workspace) + scratch_offset;
 
@@ -273,7 +267,7 @@ cudaError_t unique(
 
 std::size_t get_unique_workspace_size(std::size_t num_elements)
 {
-  const auto temp_size = get_unique_temp_storage_size(num_elements);
+  const auto temp_size = query_unique_temp_storage_size(num_elements);
   const auto scratch_offset = align_up(temp_size, alignof(std::int64_t));
   return scratch_offset + (3 * num_elements + 1U) * sizeof(std::int64_t) +
          num_elements * sizeof(std::int32_t);

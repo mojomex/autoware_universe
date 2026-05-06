@@ -19,6 +19,7 @@
 
 #include <NvInferRuntimePlugin.h>
 
+#include <cstdint>
 #include <string>
 
 namespace nvinfer1::plugin
@@ -39,10 +40,28 @@ nvinfer1::PluginFieldCollection const * ArgsortPluginCreator::getFieldNames() no
 }
 
 IPluginV3 * ArgsortPluginCreator::createPlugin(
-  char const * name, [[maybe_unused]] PluginFieldCollection const * fc,
-  [[maybe_unused]] TensorRTPhase phase) noexcept
+  char const * name, PluginFieldCollection const * fc, TensorRTPhase phase) noexcept
 {
-  return new (std::nothrow) ArgsortPlugin(std::string(name));
+  if (phase != TensorRTPhase::kBUILD && phase != TensorRTPhase::kRUNTIME) {
+    return nullptr;
+  }
+
+  try {
+    std::int64_t max_num_elements = 0;
+    for (std::int32_t i = 0; i < fc->nbFields; ++i) {
+      const auto & field = fc->fields[i];
+      const std::string attr_name = field.name;
+      if (attr_name == "max_num_elements") {
+        PLUGIN_VALIDATE(field.type == PluginFieldType::kINT64);
+        PLUGIN_VALIDATE(field.length == 1);
+        max_num_elements = static_cast<std::int64_t const *>(field.data)[0];
+      }
+    }
+    return new (std::nothrow) ArgsortPlugin(std::string(name), max_num_elements);
+  } catch (std::exception const & e) {
+    caughtError(e);
+  }
+  return nullptr;
 }
 
 }  // namespace nvinfer1::plugin

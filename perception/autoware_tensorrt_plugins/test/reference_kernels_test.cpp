@@ -273,7 +273,7 @@ TEST(ReferenceKernelsTest, UniqueMatchesCpuReference)
   ASSERT_EQ(
     unique(
       input_d.get(), unique_d.get(), inverse_d.get(), counts_d.get(), num_unique_d.get(),
-      workspace_d.get(), input.size(), stream.get()),
+      workspace_d.get(), input.size(), get_unique_temp_storage_size(input.size()), stream.get()),
     cudaSuccess);
   ASSERT_EQ(cudaStreamSynchronize(stream.get()), cudaSuccess);
 

@@ -20,6 +20,7 @@
 #include <NvInferRuntime.h>
 #include <NvInferRuntimePlugin.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <exception>
 #include <string>
@@ -33,9 +34,25 @@ UniquePlugin::UniquePlugin(const std::string & name) noexcept : layer_name_(name
   initFieldsToSerialize();
 }
 
+UniquePlugin::UniquePlugin(const std::string & name, const std::int64_t max_num_elements) noexcept
+: layer_name_(name)
+{
+  updateMaxNumElements(max_num_elements);
+  initFieldsToSerialize();
+}
+
+void UniquePlugin::updateMaxNumElements(const std::int64_t max_num_elements) noexcept
+{
+  max_num_elements_ = std::max(max_num_elements_, max_num_elements);
+  max_temp_storage_size_ =
+    get_unique_temp_storage_size(static_cast<std::size_t>(std::max<std::int64_t>(max_num_elements_, 0)));
+}
+
 void UniquePlugin::initFieldsToSerialize()
 {
   data_to_serialize_.clear();
+  data_to_serialize_.emplace_back(
+    "max_num_elements", &max_num_elements_, PluginFieldType::kINT64, 1);
   fc_to_serialize_.nbFields = data_to_serialize_.size();
   fc_to_serialize_.fields = data_to_serialize_.data();
 }
@@ -60,7 +77,7 @@ IPluginCapability * UniquePlugin::getCapabilityInterface(PluginCapabilityType ty
 IPluginV3 * UniquePlugin::clone() noexcept
 {
   try {
-    IPluginV3 * const plugin{new UniquePlugin{layer_name_}};
+    IPluginV3 * const plugin{new UniquePlugin{layer_name_, max_num_elements_}};
     return plugin;
   } catch (std::exception const & e) {
     caughtError(e);
@@ -105,6 +122,8 @@ std::int32_t UniquePlugin::configurePlugin(
   PLUGIN_ASSERT(out[1].desc.type == in[0].desc.type);
   PLUGIN_ASSERT(out[2].desc.type == in[0].desc.type);
   PLUGIN_ASSERT(out[3].desc.type == in[0].desc.type);
+
+  updateMaxNumElements(in[0].max.d[0]);
 
   return 0;
 }
@@ -167,8 +186,8 @@ std::int32_t UniquePlugin::enqueue(
   return unique(
     reinterpret_cast<const std::int64_t *>(inputs[0]), reinterpret_cast<std::int64_t *>(outputs[0]),
     reinterpret_cast<std::int64_t *>(outputs[1]), reinterpret_cast<std::int64_t *>(outputs[2]),
-    reinterpret_cast<std::int64_t *>(outputs[3]), workspace,
-    static_cast<std::size_t>(num_elements), stream);
+    reinterpret_cast<std::int64_t *>(outputs[3]), workspace, static_cast<std::size_t>(num_elements),
+    max_temp_storage_size_, stream);
 }
 
 std::int32_t UniquePlugin::onShapeChange(
