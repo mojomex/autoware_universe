@@ -72,7 +72,14 @@ if(TRT_AVAIL AND CUDA_AVAIL AND SPCONV_AVAIL)
   find_package(ament_cmake_auto REQUIRED)
   ament_auto_find_build_dependencies()
 
-  find_package(nvtx3 REQUIRED)
+  find_package(nvtx3 QUIET)
+  if(NOT nvtx3_FOUND)
+    add_library(nvtx3::nvtx3-cpp INTERFACE IMPORTED)
+    target_include_directories(
+      nvtx3::nvtx3-cpp INTERFACE
+      /opt/nvidia/nsight-systems/2026.2.1/target-linux-x64/nvtx/include
+    )
+  endif()
 
   include_directories(
     include
