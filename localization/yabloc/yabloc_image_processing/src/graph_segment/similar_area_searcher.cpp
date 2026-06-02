@@ -19,6 +19,9 @@
 #include <rclcpp/logging.hpp>
 
 #include <queue>
+#include <set>
+#include <unordered_map>
+#include <vector>
 
 namespace yabloc::graph_segment
 {
@@ -37,7 +40,7 @@ std::set<int> SimilarAreaSearcher::search(
 
   for (int h = 0; h < rgb_image.rows; h++) {
     const int * seg_ptr = segmented.ptr<int>(h);
-    const cv::Vec3b * rgb_ptr = rgb_image.ptr<cv::Vec3b>(h);
+    const auto * rgb_ptr = rgb_image.ptr<cv::Vec3b>(h);
 
     for (int w = 0; w < rgb_image.cols; w++) {
       int key = seg_ptr[w];

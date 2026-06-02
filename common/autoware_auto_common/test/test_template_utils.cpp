@@ -14,7 +14,7 @@
 //
 // Co-developed by Tier IV, Inc. and Apex.AI, Inc.
 
-#include <helper_functions/template_utils.hpp>
+#include "autoware_auto_common/helper_functions/template_utils.hpp"
 
 #include <gtest/gtest.h>
 
@@ -27,7 +27,7 @@ struct FalseType
 
 struct Foo
 {
-  CorrectType bar(CorrectType, const CorrectType &, CorrectType *) { return CorrectType{}; }
+  static CorrectType bar(CorrectType, const CorrectType &, CorrectType *) { return CorrectType{}; }
 };
 
 template <template <typename> class Expression, typename... Ts>

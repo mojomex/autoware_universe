@@ -1,0 +1,22 @@
+/**:
+  ros__parameters:
+    # plugins
+    plugins_path: $(find-pkg-share autoware_tensorrt_plugins)/plugins/libautoware_tensorrt_plugins.so
+    # network
+    trt_precision: fp16
+    cloud_capacity: 2000000
+    source_reconstruction: partial
+    onnx_path: "$(var model_path)/ptv3.onnx"
+    engine_path: "$(var model_path)/ptv3.engine"
+    filter:
+      class_probability_threshold: 0.05
+      classes: [
+        "drivable_surface",
+        "other_flat_surface",
+        "sidewalk",
+        "vegetation", 
+        "noise+ghost_point", 
+        "manmade"
+      ]
+      output_format: ""
+    filter_segmentation: true

@@ -45,11 +45,11 @@ Converted model URL
 
 #### Input
 
-| Name                | Type                                         | Description              |
-| ------------------- | -------------------------------------------- | ------------------------ |
-| `input/camera_info` | `sensor_msgs::msg::CameraInfo`               | undistorted camera info  |
-| `input/image_raw`   | `sensor_msgs::msg::Image`                    | undistorted camera image |
-| `input/vector_map`  | `autoware_auto_mapping_msgs::msg::HADMapBin` | vector map               |
+| Name                | Type                                    | Description              |
+| ------------------- | --------------------------------------- | ------------------------ |
+| `input/camera_info` | `sensor_msgs::msg::CameraInfo`          | undistorted camera info  |
+| `input/image_raw`   | `sensor_msgs::msg::Image`               | undistorted camera image |
+| `input/vector_map`  | `autoware_map_msgs::msg::LaneletMapBin` | vector map               |
 
 #### Output
 
@@ -59,12 +59,10 @@ Converted model URL
 
 ### Parameters
 
-| Name               | Type | Description                               |
-| ------------------ | ---- | ----------------------------------------- |
-| `angle_resolution` | int  | how many divisions of 1 sigma angle range |
+{{ json_to_markdown("localization/yabloc/yabloc_pose_initializer/schema/camera_pose_initializer.schema.json") }}
 
 ### Services
 
-| Name               | Type                                                      | Description                     |
-| ------------------ | --------------------------------------------------------- | ------------------------------- |
-| `yabloc_align_srv` | `tier4_localization_msgs::srv::PoseWithCovarianceStamped` | initial pose estimation request |
+| Name               | Type                                                                  | Description                     |
+| ------------------ | --------------------------------------------------------------------- | ------------------------------- |
+| `yabloc_align_srv` | `autoware_internal_localization_msgs::srv::PoseWithCovarianceStamped` | initial pose estimation request |
