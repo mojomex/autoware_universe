@@ -119,6 +119,7 @@ private:
   static constexpr std::int32_t INOUT_OUT_FEATURES_INDEX{5};
 
   void initFieldsToSerialize();
+  std::int32_t prewarmTuner(PluginTensorDesc const * in, cudaStream_t stream);
 
   std::string layer_name_;
   ImplicitGemmParameters params_;

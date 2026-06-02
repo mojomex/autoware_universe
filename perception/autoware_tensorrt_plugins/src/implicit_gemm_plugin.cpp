@@ -26,11 +26,13 @@
 #include <spconvlib/spconv/csrc/sparse/convops/spops/ConvGemmOps.h>
 #include <spconvlib/spconv/csrc/sparse/inference/InferenceOps.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -38,6 +40,52 @@
 
 namespace nvinfer1::plugin
 {
+namespace
+{
+
+class AsyncDeviceBuffer
+{
+public:
+  AsyncDeviceBuffer(std::size_t bytes, cudaStream_t stream) : stream_{stream}
+  {
+    if (bytes == 0) {
+      return;
+    }
+    status_ = cudaMallocAsync(&ptr_, bytes, stream_);
+    if (status_ == cudaSuccess) {
+      status_ = cudaMemsetAsync(ptr_, 0, bytes, stream_);
+    }
+  }
+
+  ~AsyncDeviceBuffer()
+  {
+    if (ptr_) {
+      static_cast<void>(cudaFreeAsync(ptr_, stream_));
+    }
+  }
+
+  AsyncDeviceBuffer(AsyncDeviceBuffer const &) = delete;
+  AsyncDeviceBuffer & operator=(AsyncDeviceBuffer const &) = delete;
+
+  void * get() const { return ptr_; }
+  cudaError_t status() const { return status_; }
+
+private:
+  void * ptr_{nullptr};
+  cudaStream_t stream_{nullptr};
+  cudaError_t status_{cudaSuccess};
+};
+
+std::size_t tensorBytes(std::initializer_list<std::int64_t> dims, tv::DType dtype)
+{
+  std::size_t elements = 1;
+  for (const auto dim : dims) {
+    elements *= static_cast<std::size_t>(std::max<std::int64_t>(dim, 1));
+  }
+  return elements * tv::detail::sizeof_dtype(dtype);
+}
+
+}  // namespace
 
 ImplicitGemmPlugin::ImplicitGemmPlugin(
   const std::string & name, ImplicitGemmParameters const & params)
@@ -301,11 +349,92 @@ std::int32_t ImplicitGemmPlugin::enqueue(
   return 0;
 }
 
+std::int32_t ImplicitGemmPlugin::prewarmTuner(
+  PluginTensorDesc const * input_desc, cudaStream_t stream)
+{
+  constexpr auto kForwardInt = static_cast<int>(tv::gemm::ConvOpType::kForward);
+  constexpr auto kChannelLastInt = static_cast<int>(tv::gemm::ConvLayoutType::kChannelLast);
+
+  const auto in_features_type = input_desc[INOUT_IN_FEATURES_INDEX].type;
+  const auto dtype = in_features_type == DataType::kFLOAT ? tv::float32 : tv::float16;
+  auto & tuner_ptr = dtype == tv::float32 ? tuner_fp32_ptr_ : tuner_fp16_ptr_;
+
+  const std::int64_t num_act_in =
+    std::max<std::int64_t>(input_desc[INOUT_IN_FEATURES_INDEX].dims.d[0], 1);
+  const std::int64_t num_in_features = input_desc[INOUT_IN_FEATURES_INDEX].dims.d[1];
+  const std::int64_t num_act_out =
+    std::max<std::int64_t>(input_desc[INOUT_PAIR_FWD_INDEX].dims.d[1], 1);
+  const std::int64_t kernel_volume = input_desc[INOUT_PAIR_FWD_INDEX].dims.d[0];
+  const std::int64_t num_out_features = input_desc[INOUT_FILTERS_INDEX].dims.d[0];
+  const bool need_dynamic_mask = kernel_volume > 32;
+
+  auto tuned_res_exist = tuner_ptr->get_tuned_algo(
+    kForwardInt, static_cast<int>(dtype), static_cast<int>(dtype), static_cast<int>(dtype),
+    static_cast<int>(num_out_features), static_cast<int>(num_in_features), arch_, -1,
+    need_dynamic_mask);
+  if (std::get<1>(tuned_res_exist)) {
+    return 0;
+  }
+
+  AsyncDeviceBuffer input_features_storage(
+    tensorBytes({num_act_in, num_in_features}, dtype), stream);
+  AsyncDeviceBuffer weights_storage(
+    tensorBytes(
+      {input_desc[INOUT_FILTERS_INDEX].dims.d[0], input_desc[INOUT_FILTERS_INDEX].dims.d[1],
+       input_desc[INOUT_FILTERS_INDEX].dims.d[2], input_desc[INOUT_FILTERS_INDEX].dims.d[3],
+       input_desc[INOUT_FILTERS_INDEX].dims.d[4]},
+      dtype),
+    stream);
+  AsyncDeviceBuffer out_features_storage(
+    tensorBytes({num_act_out, num_out_features}, dtype), stream);
+  AsyncDeviceBuffer pair_fwd_storage(tensorBytes({kernel_volume, num_act_out}, tv::int32), stream);
+  AsyncDeviceBuffer pair_mask_storage(tensorBytes({1, num_act_out}, tv::int32), stream);
+  AsyncDeviceBuffer mask_argsort_storage(tensorBytes({num_act_out}, tv::int32), stream);
+
+  const cudaError_t status = cudaGetLastError();
+  if (
+    input_features_storage.status() != cudaSuccess || weights_storage.status() != cudaSuccess ||
+    out_features_storage.status() != cudaSuccess || pair_fwd_storage.status() != cudaSuccess ||
+    pair_mask_storage.status() != cudaSuccess || mask_argsort_storage.status() != cudaSuccess ||
+    status != cudaSuccess) {
+    return status == cudaSuccess ? cudaErrorMemoryAllocation : status;
+  }
+
+  tv::Tensor input_features =
+    tv::from_blob(input_features_storage.get(), {num_act_in, num_in_features}, dtype, 0);
+  tv::Tensor weights = tv::from_blob(
+    weights_storage.get(),
+    {input_desc[INOUT_FILTERS_INDEX].dims.d[0], input_desc[INOUT_FILTERS_INDEX].dims.d[1],
+     input_desc[INOUT_FILTERS_INDEX].dims.d[2], input_desc[INOUT_FILTERS_INDEX].dims.d[3],
+     input_desc[INOUT_FILTERS_INDEX].dims.d[4]},
+    dtype, 0);
+  tv::Tensor out_features =
+    tv::from_blob(out_features_storage.get(), {num_act_out, num_out_features}, dtype, 0);
+  tv::Tensor pair_fwd =
+    tv::from_blob(pair_fwd_storage.get(), {kernel_volume, num_act_out}, tv::int32, 0);
+  tv::Tensor pair_mask = tv::from_blob(pair_mask_storage.get(), {1, num_act_out}, tv::int32, 0);
+  tv::Tensor mask_argsort = tv::from_blob(mask_argsort_storage.get(), {num_act_out}, tv::int32, 0);
+
+  static_cast<void>(tuner_ptr->tune_and_cache(
+    kForwardInt, input_features, weights, out_features, kChannelLastInt, kChannelLastInt,
+    kChannelLastInt, 1, 1, 1, arch_, pair_mask.type_view(tv::uint32), mask_argsort, pair_fwd, false,
+    0xffffffff, -1, tv::Tensor(), 1.0, 0.0, reinterpret_cast<std::uintptr_t>(stream), true, false,
+    5, false, tv::Tensor(), tv::Tensor()));
+
+  return cudaGetLastError();
+}
+
 std::int32_t ImplicitGemmPlugin::onShapeChange(
-  [[maybe_unused]] PluginTensorDesc const * in, [[maybe_unused]] std::int32_t num_inputs,
+  PluginTensorDesc const * in, [[maybe_unused]] std::int32_t num_inputs,
   [[maybe_unused]] PluginTensorDesc const * out, [[maybe_unused]] std::int32_t num_outputs) noexcept
 {
-  return 0;
+  try {
+    PLUGIN_ASSERT(num_inputs == 5);
+    return prewarmTuner(in, nullptr);
+  } catch (std::exception const & e) {
+    caughtError(e);
+  }
+  return -1;
 }
 
 IPluginV3 * ImplicitGemmPlugin::attachToContext(

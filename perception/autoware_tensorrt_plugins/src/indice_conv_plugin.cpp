@@ -17,6 +17,8 @@
 
 #include "autoware/tensorrt_plugins/plugin_utils.hpp"
 
+#include <nvtx3/nvtx3.hpp>
+
 #include <NvInferRuntime.h>
 #include <NvInferRuntimePlugin.h>
 #include <spconvlib/cumm/gemm/main/GemmMainUnitTest.h>
@@ -27,10 +29,11 @@
 #include <spconvlib/spconv/csrc/sparse/convops/spops/ConvGemmOps.h>
 #include <spconvlib/spconv/csrc/sparse/inference/InferenceOps.h>
 
-#include <nvtx3/nvtx3.hpp>
-
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -38,6 +41,52 @@
 
 namespace nvinfer1::plugin
 {
+namespace
+{
+
+class AsyncDeviceBuffer
+{
+public:
+  AsyncDeviceBuffer(std::size_t bytes, cudaStream_t stream) : stream_{stream}
+  {
+    if (bytes == 0) {
+      return;
+    }
+    status_ = cudaMallocAsync(&ptr_, bytes, stream_);
+    if (status_ == cudaSuccess) {
+      status_ = cudaMemsetAsync(ptr_, 0, bytes, stream_);
+    }
+  }
+
+  ~AsyncDeviceBuffer()
+  {
+    if (ptr_) {
+      static_cast<void>(cudaFreeAsync(ptr_, stream_));
+    }
+  }
+
+  AsyncDeviceBuffer(AsyncDeviceBuffer const &) = delete;
+  AsyncDeviceBuffer & operator=(AsyncDeviceBuffer const &) = delete;
+
+  void * get() const { return ptr_; }
+  cudaError_t status() const { return status_; }
+
+private:
+  void * ptr_{nullptr};
+  cudaStream_t stream_{nullptr};
+  cudaError_t status_{cudaSuccess};
+};
+
+std::size_t tensorBytes(std::initializer_list<std::int64_t> dims, tv::DType dtype)
+{
+  std::size_t elements = 1;
+  for (const auto dim : dims) {
+    elements *= static_cast<std::size_t>(std::max<std::int64_t>(dim, 1));
+  }
+  return elements * tv::detail::sizeof_dtype(dtype);
+}
+
+}  // namespace
 
 IndiceConvPlugin::IndiceConvPlugin(const std::string & name, IndiceConvParameters const & params)
 : layer_name_{name}, params_{params}
@@ -261,19 +310,88 @@ std::int32_t IndiceConvPlugin::enqueue(
     ConvGemmOps::indice_conv(
       alloc2, ext_mm, *tuner_ptr, true, false, input_features, weights, pairs, pairs_num, arch_,
       out_features.dim(0), false, params_.is_subm,
-      static_cast<int>(tv::gemm::SparseConvAlgo::kNative),
-      reinterpret_cast<std::uintptr_t>(stream), tv::Tensor(), 0.f, 0.f,
-      tv::gemm::Activation::kNone, false);
+      static_cast<int>(tv::gemm::SparseConvAlgo::kNative), reinterpret_cast<std::uintptr_t>(stream),
+      tv::Tensor(), 0.f, 0.f, tv::gemm::Activation::kNone, false);
   }
 
   return 0;
 }
 
-std::int32_t IndiceConvPlugin::onShapeChange(
-  [[maybe_unused]] PluginTensorDesc const * in, [[maybe_unused]] std::int32_t num_inputs,
-  [[maybe_unused]] PluginTensorDesc const * out, [[maybe_unused]] std::int32_t num_outputs) noexcept
+std::int32_t IndiceConvPlugin::prewarmTuner(
+  PluginTensorDesc const * input_desc, PluginTensorDesc const * output_desc, cudaStream_t stream)
 {
-  return 0;
+  constexpr int kShuffleAC = static_cast<int>(tv::gemm::ShuffleStrideType::kShuffleAC);
+
+  const auto in_features_type = input_desc[INOUT_IN_FEATURES_INDEX].type;
+  const auto dtype = in_features_type == DataType::kFLOAT ? tv::float32 : tv::float16;
+  auto & tuner_ptr = dtype == tv::float32 ? tuner_fp32_ptr_ : tuner_fp16_ptr_;
+
+  const std::int64_t num_act_in =
+    std::max<std::int64_t>(input_desc[INOUT_IN_FEATURES_INDEX].dims.d[0], 1);
+  const std::int64_t num_in_features = input_desc[INOUT_IN_FEATURES_INDEX].dims.d[1];
+  const std::int64_t num_act_out = std::max<std::int64_t>(output_desc[0].dims.d[0], 1);
+  const std::int64_t num_out_features = input_desc[INOUT_FILTERS_INDEX].dims.d[0];
+  const std::int64_t nhot = std::max<std::int64_t>(
+    1, std::min<std::int64_t>(input_desc[INOUT_INDICE_PAIRS_INDEX].dims.d[2], num_act_out));
+
+  const std::vector<std::int64_t> input_shape{num_act_in, num_in_features};
+  const std::vector<std::int64_t> filter_shape{num_out_features, num_in_features};
+  const std::vector<std::int64_t> output_shape{num_act_out, num_out_features};
+  const std::vector<std::int64_t> indices_shape{nhot};
+
+  auto tuned_res_exist = tuner_ptr->get_tuned_algo(
+    static_cast<int>(dtype), static_cast<int>(dtype), static_cast<int>(dtype), input_shape,
+    filter_shape, output_shape, false, true, false, arch_, kShuffleAC, indices_shape, {},
+    indices_shape, 1);
+  if (std::get<1>(tuned_res_exist)) {
+    return 0;
+  }
+
+  AsyncDeviceBuffer input_features_storage(
+    tensorBytes({num_act_in, num_in_features}, dtype), stream);
+  AsyncDeviceBuffer weights_storage(
+    tensorBytes({num_out_features, num_in_features}, dtype), stream);
+  AsyncDeviceBuffer out_features_storage(
+    tensorBytes({num_act_out, num_out_features}, dtype), stream);
+  AsyncDeviceBuffer input_indices_storage(tensorBytes({nhot}, tv::int32), stream);
+  AsyncDeviceBuffer output_indices_storage(tensorBytes({nhot}, tv::int32), stream);
+
+  const cudaError_t status = cudaGetLastError();
+  if (
+    input_features_storage.status() != cudaSuccess || weights_storage.status() != cudaSuccess ||
+    out_features_storage.status() != cudaSuccess || input_indices_storage.status() != cudaSuccess ||
+    output_indices_storage.status() != cudaSuccess || status != cudaSuccess) {
+    return status == cudaSuccess ? cudaErrorMemoryAllocation : status;
+  }
+
+  tv::Tensor input_features =
+    tv::from_blob(input_features_storage.get(), {num_act_in, num_in_features}, dtype, 0);
+  tv::Tensor weights =
+    tv::from_blob(weights_storage.get(), {num_out_features, num_in_features}, dtype, 0);
+  tv::Tensor out_features =
+    tv::from_blob(out_features_storage.get(), {num_act_out, num_out_features}, dtype, 0);
+  tv::Tensor input_indices = tv::from_blob(input_indices_storage.get(), {nhot}, tv::int32, 0);
+  tv::Tensor output_indices = tv::from_blob(output_indices_storage.get(), {nhot}, tv::int32, 0);
+
+  static_cast<void>(tuner_ptr->tune_and_cache(
+    input_features, weights, out_features, false, true, false, arch_, kShuffleAC, input_indices,
+    tv::Tensor(), output_indices, 1, 1.0, 0.0, reinterpret_cast<std::uintptr_t>(stream), 5, false));
+
+  return cudaGetLastError();
+}
+
+std::int32_t IndiceConvPlugin::onShapeChange(
+  PluginTensorDesc const * in, [[maybe_unused]] std::int32_t num_inputs,
+  PluginTensorDesc const * out, [[maybe_unused]] std::int32_t num_outputs) noexcept
+{
+  try {
+    PLUGIN_ASSERT(num_inputs == 5);
+    PLUGIN_ASSERT(num_outputs == 1);
+    return prewarmTuner(in, out, nullptr);
+  } catch (std::exception const & e) {
+    caughtError(e);
+  }
+  return -1;
 }
 
 IPluginV3 * IndiceConvPlugin::attachToContext(
