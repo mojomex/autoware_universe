@@ -39,6 +39,29 @@
 
 namespace nvinfer1::plugin
 {
+namespace
+{
+
+constexpr std::size_t kAlignment = 256U;
+constexpr std::size_t kMinThrustTempBytes = 8U * 1024U * 1024U;
+
+std::size_t alignUp(const std::size_t size, const std::size_t alignment)
+{
+  return (size + alignment - 1U) & ~(alignment - 1U);
+}
+
+std::size_t getThrustTempBytes(const std::size_t num_items, const int mask_count)
+{
+  const std::size_t key_bytes =
+    num_items * (mask_count > 1 ? sizeof(std::int64_t) : sizeof(std::int32_t));
+  const std::size_t value_bytes = num_items * sizeof(std::int32_t);
+  const std::size_t alternate_storage = alignUp(key_bytes, kAlignment) +
+                                        alignUp(key_bytes, kAlignment) +
+                                        alignUp(value_bytes, kAlignment) + key_bytes;
+  return std::max(kMinThrustTempBytes, alternate_storage);
+}
+
+}  // namespace
 
 GetIndicesPairsImplicitGemmPlugin::GetIndicesPairsImplicitGemmPlugin(
   const std::string & name, GetIndicesPairsImplicitGemmParameters const & params)
@@ -380,7 +403,9 @@ std::int32_t GetIndicesPairsImplicitGemmPlugin::enqueue(
 
   tv::Tensor thrust_tmp = tv::from_blob(
     static_cast<std::uint8_t *>(workspace) + thrust_tmp_offset,
-    {static_cast<std::int64_t>(kThrustTempBytes)}, tv::uint8, 0);
+    {static_cast<std::int64_t>(
+      getThrustTempBytes(static_cast<std::size_t>(out_indices_num_limit_), mask_count))},
+    tv::uint8, 0);
 
   std::tuple<tv::Tensor, int> pair_res;
 
@@ -507,6 +532,9 @@ std::size_t GetIndicesPairsImplicitGemmPlugin::getWorkspaceSize(
 
   int kernel_volume =
     std::accumulate(params_.ksize.begin(), params_.ksize.end(), 1, std::multiplies<int>());
+  bool is_split_mask =
+    params_.algo == static_cast<std::int64_t>(tv::gemm::SparseConvAlgo::kMaskSplitImplicitGemm);
+  int mask_count = is_split_mask ? 2 : 1;
 
   size_t workspace_size = 0;
 
@@ -517,10 +545,6 @@ std::size_t GetIndicesPairsImplicitGemmPlugin::getWorkspaceSize(
   workspace_size += static_cast<std::size_t>(kernel_volume) * tv::detail::sizeof_dtype(tv::int32);
 
   if (!is_subm) {
-    bool is_split_mask =
-      params_.algo == static_cast<std::int64_t>(tv::gemm::SparseConvAlgo::kMaskSplitImplicitGemm);
-    int mask_count = is_split_mask ? 2 : 1;
-
     workspace_size += static_cast<std::size_t>(kernel_volume) * out_indices_num_limit_ *
                       tv::detail::sizeof_dtype(tv::int32);
     workspace_size += static_cast<std::size_t>(mask_count) * out_indices_num_limit_ *
@@ -529,7 +553,8 @@ std::size_t GetIndicesPairsImplicitGemmPlugin::getWorkspaceSize(
                       tv::detail::sizeof_dtype(tv::int32);
   }
 
-  workspace_size += kThrustTempBytes;
+  workspace_size +=
+    getThrustTempBytes(static_cast<std::size_t>(out_indices_num_limit_), mask_count);
 
   return workspace_size;
 }
