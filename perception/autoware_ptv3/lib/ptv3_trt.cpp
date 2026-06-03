@@ -21,11 +21,15 @@
 #include <autoware/cuda_utils/cuda_utils.hpp>
 #include <autoware/point_types/memory.hpp>
 #include <autoware/point_types/types.hpp>
+#ifdef AUTOWARE_PTV3_ENABLE_NVTX
+#include <nvToolsExt.h>
+#endif
 #include <rclcpp/rclcpp.hpp>
 
 #include <sensor_msgs/msg/point_field.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <memory>
@@ -41,6 +45,88 @@ namespace autoware::ptv3
 namespace
 {
 constexpr const char * k_logger = "ptv3";
+constexpr std::uint32_t kNvtxBenchmarkColor = 0xFF5E3C99U;
+constexpr std::uint32_t kNvtxPreprocessColor = 0xFF1B9E77U;
+constexpr std::uint32_t kNvtxInferenceColor = 0xFFD95F02U;
+constexpr std::uint32_t kNvtxPostprocessColor = 0xFF7570B3U;
+constexpr std::uint32_t kNvtxSynchronizeColor = 0xFF666666U;
+constexpr std::uint32_t kNvtxBackboneColor = 0xFF1F78B4U;
+constexpr std::uint32_t kNvtxSeg3dHeadColor = 0xFF33A02CU;
+constexpr std::uint32_t kNvtxDet3dHeadColor = 0xFFE31A1CU;
+
+class CudaEvent
+{
+public:
+  CudaEvent()
+  {
+    CHECK_CUDA_ERROR(cudaEventCreate(&event_));
+  }
+
+  ~CudaEvent()
+  {
+    if (event_ != nullptr) {
+      cudaEventDestroy(event_);
+    }
+  }
+
+  void record(cudaStream_t stream)
+  {
+    CHECK_CUDA_ERROR(cudaEventRecord(event_, stream));
+  }
+
+  [[nodiscard]] double elapsed_ms_to(const CudaEvent & end_event) const
+  {
+    float elapsed_ms = 0.0F;
+    CHECK_CUDA_ERROR(cudaEventElapsedTime(&elapsed_ms, event_, end_event.event_));
+    return static_cast<double>(elapsed_ms);
+  }
+
+private:
+  cudaEvent_t event_{nullptr};
+};
+
+double duration_ms(const std::chrono::steady_clock::duration duration)
+{
+  return std::chrono::duration<double, std::milli>(duration).count();
+}
+
+class ScopedNvtxRange
+{
+public:
+  ScopedNvtxRange(const char * message, const std::uint32_t color, const bool enabled)
+  : enabled_(enabled)
+  {
+#ifdef AUTOWARE_PTV3_ENABLE_NVTX
+    if (!enabled_) {
+      return;
+    }
+
+    nvtxEventAttributes_t attributes{};
+    attributes.version = NVTX_VERSION;
+    attributes.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
+    attributes.colorType = NVTX_COLOR_ARGB;
+    attributes.color = color;
+    attributes.messageType = NVTX_MESSAGE_TYPE_ASCII;
+    attributes.message.ascii = message;
+    nvtxRangePushEx(&attributes);
+#else
+    (void)message;
+    (void)color;
+#endif
+  }
+
+  ~ScopedNvtxRange()
+  {
+#ifdef AUTOWARE_PTV3_ENABLE_NVTX
+    if (enabled_) {
+      nvtxRangePop();
+    }
+#endif
+  }
+
+private:
+  bool enabled_{false};
+};
 
 const char * to_trt_dtype_name(const nvinfer1::DataType dtype)
 {
@@ -686,6 +772,145 @@ bool PTv3TRT::infer(
 
   proc_timing.emplace(
     "debug/processing_time/postprocess_ms", stop_watch_ptr_->toc("processing/inner", true));
+
+  return (should_run_seg3d && seg_ok && seg_post_ok) || (should_run_det3d && det_ok && det_post_ok);
+}
+
+bool PTv3TRT::benchmark(
+  const std::shared_ptr<const cuda_blackboard::CudaPointCloud2> & msg_ptr,
+  const PTv3BenchmarkOptions & options, PTv3BenchmarkMetrics & metrics)
+{
+  metrics = {};
+  metrics.input_points = static_cast<std::uint32_t>(msg_ptr->height * msg_ptr->width);
+
+  const ScopedNvtxRange benchmark_range(
+    "ptv3_benchmark", kNvtxBenchmarkColor, options.annotate_nvtx);
+
+  const bool should_run_seg3d =
+    config_.use_seg3d_head_ &&
+    (options.materialize_segmented_pointcloud || options.materialize_visualization_pointcloud ||
+     options.materialize_filtered_pointcloud);
+  const bool should_run_det3d = config_.use_det3d_head_ && options.detect_objects;
+
+  if (!should_run_seg3d && !should_run_det3d) {
+    RCLCPP_ERROR(rclcpp::get_logger(k_logger), "No enabled PTv3 head was requested.");
+    return false;
+  }
+
+  std::optional<std::vector<Box3D>> det_boxes3d;
+  const auto cpu_total_start = std::chrono::steady_clock::now();
+  CudaEvent total_start;
+  CudaEvent preprocess_start;
+  CudaEvent preprocess_end;
+  CudaEvent inference_start;
+  CudaEvent inference_end;
+  CudaEvent postprocess_start;
+  CudaEvent postprocess_end;
+  CudaEvent total_end;
+
+  total_start.record(stream_);
+  {
+    const ScopedNvtxRange preprocess_range(
+      "ptv3_preprocess", kNvtxPreprocessColor, options.annotate_nvtx);
+    preprocess_start.record(stream_);
+    const auto cpu_preprocess_start = std::chrono::steady_clock::now();
+    if (!pre_process(msg_ptr)) {
+      RCLCPP_ERROR(rclcpp::get_logger(k_logger), "Pre-process failed.");
+      return false;
+    }
+    metrics.cpu_preprocess_ms =
+      duration_ms(std::chrono::steady_clock::now() - cpu_preprocess_start);
+    preprocess_end.record(stream_);
+  }
+
+  bool seg_ok = !should_run_seg3d;
+  bool det_ok = !should_run_det3d;
+  {
+    const ScopedNvtxRange inference_range(
+      "ptv3_inference", kNvtxInferenceColor, options.annotate_nvtx);
+    inference_start.record(stream_);
+    const auto cpu_inference_start = std::chrono::steady_clock::now();
+    {
+      const ScopedNvtxRange backbone_range(
+        "ptv3_backbone", kNvtxBackboneColor, options.annotate_nvtx);
+      if (!infer_backbone()) {
+        RCLCPP_ERROR(rclcpp::get_logger(k_logger), "Backbone inference failed.");
+        return false;
+      }
+    }
+    if (should_run_seg3d) {
+      const ScopedNvtxRange seg3d_head_range(
+        "ptv3_semseg_head", kNvtxSeg3dHeadColor, options.annotate_nvtx);
+      seg_ok = infer_seg3d_head();
+      if (!seg_ok) {
+        RCLCPP_ERROR(rclcpp::get_logger(k_logger), "Seg head inference failed.");
+      }
+    }
+    if (should_run_det3d) {
+      const ScopedNvtxRange det3d_head_range(
+        "ptv3_detection3d_head", kNvtxDet3dHeadColor, options.annotate_nvtx);
+      det_ok = infer_det3d_head();
+      if (!det_ok) {
+        RCLCPP_ERROR(rclcpp::get_logger(k_logger), "Det head inference failed.");
+      }
+    }
+    metrics.cpu_inference_ms =
+      duration_ms(std::chrono::steady_clock::now() - cpu_inference_start);
+    inference_end.record(stream_);
+  }
+
+  bool seg_post_ok = !should_run_seg3d;
+  bool det_post_ok = !should_run_det3d;
+  {
+    const ScopedNvtxRange postprocess_range(
+      "ptv3_postprocess", kNvtxPostprocessColor, options.annotate_nvtx);
+    postprocess_start.record(stream_);
+    const auto cpu_postprocess_start = std::chrono::steady_clock::now();
+    if (seg_ok && should_run_seg3d) {
+      try {
+        seg_post_ok = post_process_seg3d(
+          msg_ptr->header, options.materialize_segmented_pointcloud,
+          options.materialize_visualization_pointcloud, options.materialize_filtered_pointcloud);
+        if (!seg_post_ok) {
+          RCLCPP_ERROR(rclcpp::get_logger(k_logger), "Seg post-process failed.");
+        }
+      } catch (const std::exception & e) {
+        RCLCPP_ERROR(rclcpp::get_logger(k_logger), "Seg post-process failed: %s", e.what());
+        seg_post_ok = false;
+      }
+    }
+    if (det_ok && should_run_det3d) {
+      std::vector<Box3D> detected_boxes;
+      try {
+        det_post_ok = post_process_det3d(detected_boxes);
+        if (det_post_ok) {
+          det_boxes3d = std::move(detected_boxes);
+        } else {
+          RCLCPP_ERROR(rclcpp::get_logger(k_logger), "Det post-process failed.");
+        }
+      } catch (const std::exception & e) {
+        RCLCPP_ERROR(rclcpp::get_logger(k_logger), "Det post-process failed: %s", e.what());
+        det_post_ok = false;
+      }
+    }
+    metrics.cpu_postprocess_ms =
+      duration_ms(std::chrono::steady_clock::now() - cpu_postprocess_start);
+    postprocess_end.record(stream_);
+  }
+  total_end.record(stream_);
+
+  {
+    const ScopedNvtxRange synchronize_range(
+      "ptv3_synchronize", kNvtxSynchronizeColor, options.annotate_nvtx);
+    CHECK_CUDA_ERROR(cudaStreamSynchronize(stream_));
+  }
+
+  metrics.cpu_total_ms = duration_ms(std::chrono::steady_clock::now() - cpu_total_start);
+  metrics.gpu_total_ms = total_start.elapsed_ms_to(total_end);
+  metrics.gpu_preprocess_ms = preprocess_start.elapsed_ms_to(preprocess_end);
+  metrics.gpu_inference_ms = inference_start.elapsed_ms_to(inference_end);
+  metrics.gpu_postprocess_ms = postprocess_start.elapsed_ms_to(postprocess_end);
+  metrics.num_voxels = static_cast<std::uint32_t>(num_voxels_);
 
   return (should_run_seg3d && seg_ok && seg_post_ok) || (should_run_det3d && det_ok && det_post_ok);
 }

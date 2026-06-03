@@ -17,6 +17,7 @@
 #include <cuda_fp16.h>
 #include <thrust/copy.h>
 #include <thrust/count.h>
+#include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
 #include <thrust/sort.h>
 
@@ -165,16 +166,20 @@ __global__ void generate_boxes3d_kernel(
 Det3dCenterHeadPostprocess::Det3dCenterHeadPostprocess(
   const PTv3Config & config, cudaStream_t stream)
 : config_(config),
-  max_boxes_(config.det_grid_x_size_ * config.det_grid_y_size_),
-  raw_boxes_d_(max_boxes_),
-  passing_boxes_d_(max_boxes_),
-  yaw_norm_thresholds_d_(config.yaw_norm_thresholds_.begin(), config.yaw_norm_thresholds_.end())
+  max_boxes_(config.det_grid_x_size_ * config.det_grid_y_size_)
 {
+  raw_boxes_d_ = autoware::cuda_utils::make_unique<Box3D[]>(max_boxes_);
+  passing_boxes_d_ = autoware::cuda_utils::make_unique<Box3D[]>(max_boxes_);
+  yaw_norm_thresholds_d_ =
+    autoware::cuda_utils::make_unique<float[]>(config_.yaw_norm_thresholds_.size());
   distance_bin_upper_limits_d_ =
     autoware::cuda_utils::make_unique<float[]>(config_.distance_bin_upper_limits_.size());
   score_thresholds_d_ =
     autoware::cuda_utils::make_unique<float[]>(config_.detection_score_thresholds_.size());
 
+  CHECK_CUDA_ERROR(cudaMemcpyAsync(
+    yaw_norm_thresholds_d_.get(), config_.yaw_norm_thresholds_.data(),
+    config_.yaw_norm_thresholds_.size() * sizeof(float), cudaMemcpyHostToDevice, stream));
   CHECK_CUDA_ERROR(cudaMemcpyAsync(
     distance_bin_upper_limits_d_.get(), config_.distance_bin_upper_limits_.data(),
     config_.distance_bin_upper_limits_.size() * sizeof(float), cudaMemcpyHostToDevice, stream));
@@ -202,20 +207,21 @@ cudaError_t Det3dCenterHeadPostprocess::process(
     config_.det_grid_x_size_, config_.det_grid_y_size_, config_.bbox_downsample_factor_,
     static_cast<int>(config_.detection_class_names_.size()), distance_bin_upper_limits_d_.get(),
     score_thresholds_d_.get(), config_.distance_bin_upper_limits_.size(), config_.has_twist_,
-    config_.has_variance_, thrust::raw_pointer_cast(yaw_norm_thresholds_d_.data()),
-    thrust::raw_pointer_cast(raw_boxes_d_.data()));
+    config_.has_variance_, yaw_norm_thresholds_d_.get(), raw_boxes_d_.get());
 
   const auto policy = thrust::cuda::par.on(stream);
+  auto raw_begin = thrust::device_pointer_cast(raw_boxes_d_.get());
+  auto raw_end = raw_begin + max_boxes_;
+  auto passing_begin = thrust::device_pointer_cast(passing_boxes_d_.get());
 
-  const auto num_passing =
-    thrust::count_if(policy, raw_boxes_d_.begin(), raw_boxes_d_.end(), IsScoreKeep());
+  const auto num_passing = thrust::count_if(policy, raw_begin, raw_end, IsScoreKeep());
   if (num_passing == 0) {
     return cudaGetLastError();
   }
 
   const auto passing_end = thrust::copy_if(
-    policy, raw_boxes_d_.begin(), raw_boxes_d_.end(), passing_boxes_d_.begin(), IsScoreKeep());
-  thrust::sort(policy, passing_boxes_d_.begin(), passing_end, ScoreGreater());
+    policy, raw_begin, raw_end, passing_begin, IsScoreKeep());
+  thrust::sort(policy, passing_begin, passing_end, ScoreGreater());
 
   num_boxes_ = static_cast<std::size_t>(num_passing);
   return cudaGetLastError();
@@ -223,7 +229,7 @@ cudaError_t Det3dCenterHeadPostprocess::process(
 
 const Box3D * Det3dCenterHeadPostprocess::device_boxes() const
 {
-  return thrust::raw_pointer_cast(passing_boxes_d_.data());
+  return passing_boxes_d_.get();
 }
 
 template cudaError_t Det3dCenterHeadPostprocess::process<float>(

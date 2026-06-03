@@ -42,6 +42,31 @@ namespace autoware::ptv3
 
 using autoware::cuda_utils::CudaUniquePtr;
 
+struct PTv3BenchmarkOptions
+{
+  bool materialize_segmented_pointcloud{true};
+  bool materialize_visualization_pointcloud{false};
+  bool materialize_filtered_pointcloud{false};
+  bool detect_objects{false};
+  bool annotate_nvtx{false};
+};
+
+struct PTv3BenchmarkMetrics
+{
+  double cpu_total_ms{0.0};
+  double cpu_preprocess_ms{0.0};
+  double cpu_inference_ms{0.0};
+  double cpu_postprocess_ms{0.0};
+
+  double gpu_total_ms{0.0};
+  double gpu_preprocess_ms{0.0};
+  double gpu_inference_ms{0.0};
+  double gpu_postprocess_ms{0.0};
+
+  std::uint32_t input_points{0};
+  std::uint32_t num_voxels{0};
+};
+
 /**
  * @brief Owns the PTv3 TensorRT engines and CUDA buffers used by the node.
  *
@@ -112,6 +137,18 @@ public:
     bool should_publish_filtered_pointcloud, bool should_detect_objects,
     std::optional<std::vector<Box3D>> & det_boxes3d,
     std::unordered_map<std::string, double> & proc_timing);
+
+  /**
+   * @brief Run inference with CUDA event timings and optional NVTX ranges.
+   *
+   * @param msg_ptr Input GPU point cloud message.
+   * @param options Benchmark output and annotation controls.
+   * @param metrics CPU and CUDA event timings in milliseconds.
+   * @return true when all requested heads finished.
+   */
+  bool benchmark(
+    const std::shared_ptr<const cuda_blackboard::CudaPointCloud2> & msg_ptr,
+    const PTv3BenchmarkOptions & options, PTv3BenchmarkMetrics & metrics);
 
   /**
    * @brief Set the callback used for segmented point cloud publication.

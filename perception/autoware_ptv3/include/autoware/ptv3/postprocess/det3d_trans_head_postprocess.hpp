@@ -22,7 +22,6 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
-#include <thrust/device_vector.h>
 
 namespace autoware::ptv3
 {
@@ -115,7 +114,7 @@ public:
    */
   [[nodiscard]] const Box3D * device_boxes() const
   {
-    return thrust::raw_pointer_cast(passing_boxes_d_.data());
+    return passing_boxes_d_.get();
   }
 
   /**
@@ -128,9 +127,9 @@ public:
 private:
   PTv3Config config_;
 
-  thrust::device_vector<Box3D> raw_boxes_d_;
-  thrust::device_vector<Box3D> passing_boxes_d_;
-  thrust::device_vector<float> yaw_norm_thresholds_d_;
+  autoware::cuda_utils::CudaUniquePtr<Box3D[]> raw_boxes_d_{nullptr};
+  autoware::cuda_utils::CudaUniquePtr<Box3D[]> passing_boxes_d_{nullptr};
+  autoware::cuda_utils::CudaUniquePtr<float[]> yaw_norm_thresholds_d_{nullptr};
 
   autoware::cuda_utils::CudaUniquePtr<float[]> post_center_range_d_{nullptr};
   autoware::cuda_utils::CudaUniquePtr<float[]> score_thresholds_d_{nullptr};

@@ -23,7 +23,6 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
-#include <thrust/device_vector.h>
 
 namespace autoware::ptv3
 {
@@ -85,9 +84,9 @@ private:
   std::size_t max_boxes_;
   std::size_t num_boxes_{0};
 
-  thrust::device_vector<Box3D> raw_boxes_d_;
-  thrust::device_vector<Box3D> passing_boxes_d_;
-  thrust::device_vector<float> yaw_norm_thresholds_d_;
+  autoware::cuda_utils::CudaUniquePtr<Box3D[]> raw_boxes_d_{nullptr};
+  autoware::cuda_utils::CudaUniquePtr<Box3D[]> passing_boxes_d_{nullptr};
+  autoware::cuda_utils::CudaUniquePtr<float[]> yaw_norm_thresholds_d_{nullptr};
 
   autoware::cuda_utils::CudaUniquePtr<float[]> distance_bin_upper_limits_d_{nullptr};
   autoware::cuda_utils::CudaUniquePtr<float[]> score_thresholds_d_{nullptr};

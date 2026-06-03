@@ -21,6 +21,7 @@
 #include <cuda_runtime.h>
 #include <thrust/copy.h>
 #include <thrust/count.h>
+#include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
 #include <thrust/sort.h>
 
@@ -160,11 +161,16 @@ template void launch_decode_trans_head_to_boxes3d<__half, std::int64_t>(
   const float *, const float *, const float *, int, const float *, bool, Box3D *, cudaStream_t);
 
 Det3dTransHeadPostprocess::Det3dTransHeadPostprocess(const PTv3Config & config, cudaStream_t stream)
-: config_(config),
-  raw_boxes_d_(config.num_proposals_),
-  passing_boxes_d_(config.num_proposals_),
-  yaw_norm_thresholds_d_(config.yaw_norm_thresholds_.begin(), config.yaw_norm_thresholds_.end())
+: config_(config)
 {
+  raw_boxes_d_ = autoware::cuda_utils::make_unique<Box3D[]>(config_.num_proposals_);
+  passing_boxes_d_ = autoware::cuda_utils::make_unique<Box3D[]>(config_.num_proposals_);
+  yaw_norm_thresholds_d_ =
+    autoware::cuda_utils::make_unique<float[]>(config_.yaw_norm_thresholds_.size());
+  CHECK_CUDA_ERROR(cudaMemcpyAsync(
+    yaw_norm_thresholds_d_.get(), config_.yaw_norm_thresholds_.data(),
+    config_.yaw_norm_thresholds_.size() * sizeof(float), cudaMemcpyHostToDevice, stream));
+
   post_center_range_d_ = autoware::cuda_utils::make_unique<float[]>(6);
   CHECK_CUDA_ERROR(cudaMemcpyAsync(
     post_center_range_d_.get(), config_.post_center_range_.data(), 6 * sizeof(float),
@@ -198,21 +204,22 @@ cudaError_t Det3dTransHeadPostprocess::process(
     static_cast<float>(config_.bbox_downsample_factor_), config_.bbox_voxel_x_size_,
     config_.bbox_voxel_y_size_, config_.min_x_range_, config_.min_y_range_,
     post_center_range_d_.get(), score_thresholds_d_.get(), dist_bin_limits_d_.get(),
-    static_cast<int>(config_.distance_bin_upper_limits_.size()),
-    thrust::raw_pointer_cast(yaw_norm_thresholds_d_.data()), config_.has_twist_,
-    thrust::raw_pointer_cast(raw_boxes_d_.data()), stream);
+    static_cast<int>(config_.distance_bin_upper_limits_.size()), yaw_norm_thresholds_d_.get(),
+    config_.has_twist_, raw_boxes_d_.get(), stream);
 
   const auto policy = thrust::cuda::par.on(stream);
+  auto raw_begin = thrust::device_pointer_cast(raw_boxes_d_.get());
+  auto raw_end = raw_begin + config_.num_proposals_;
+  auto passing_begin = thrust::device_pointer_cast(passing_boxes_d_.get());
 
-  const auto num_passing =
-    thrust::count_if(policy, raw_boxes_d_.begin(), raw_boxes_d_.end(), IsScoreKeep{});
+  const auto num_passing = thrust::count_if(policy, raw_begin, raw_end, IsScoreKeep{});
   if (num_passing == 0) {
     return cudaGetLastError();
   }
 
   const auto passing_end = thrust::copy_if(
-    policy, raw_boxes_d_.begin(), raw_boxes_d_.end(), passing_boxes_d_.begin(), IsScoreKeep{});
-  thrust::sort(policy, passing_boxes_d_.begin(), passing_end, ScoreGreater{});
+    policy, raw_begin, raw_end, passing_begin, IsScoreKeep{});
+  thrust::sort(policy, passing_begin, passing_end, ScoreGreater{});
 
   num_boxes_ = static_cast<std::size_t>(num_passing);
   return cudaGetLastError();
