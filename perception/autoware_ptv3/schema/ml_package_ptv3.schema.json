@@ -69,7 +69,7 @@
             "type": "integer",
             "enum": [2]
           },
-          "description": "SerializedPooling strides for each encoder downsampling stage.",
+          "description": "Serialized pooling stride for each encoder downsampling stage.",
           "default": [2, 2, 2, 2]
         }
       },
