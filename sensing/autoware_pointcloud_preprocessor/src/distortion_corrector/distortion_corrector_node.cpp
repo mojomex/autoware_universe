@@ -82,6 +82,9 @@ DistortionCorrectorComponent::DistortionCorrectorComponent(const rclcpp::NodeOpt
     distortion_corrector_ = std::make_unique<DistortionCorrector2D>(*this);
   }
 
+  // Transform buffer used to look up the sensor/IMU extrinsics injected into the corrector.
+  managed_tf_buffer_ = std::make_unique<managed_transform_buffer::ManagedTransformBuffer>();
+
   // Diagnostic
   diagnostics_interface_ =
     std::make_unique<autoware_utils::DiagnosticsInterface>(this, this->get_fully_qualified_name());
@@ -106,11 +109,25 @@ void DistortionCorrectorComponent::pointcloud_callback(PointCloud2::UniquePtr po
   if (use_imu_) {
     std::vector<sensor_msgs::msg::Imu::ConstSharedPtr> imu_msgs = imu_sub_->take_data();
     for (const auto & msg : imu_msgs) {
-      distortion_corrector_->process_imu_message(base_frame_, msg);
+      const auto imu_to_base_link =
+        managed_tf_buffer_->getTransform<geometry_msgs::msg::TransformStamped>(
+          base_frame_, msg->header.frame_id, this->now(), rclcpp::Duration::from_seconds(1.0),
+          this->get_logger());
+      if (!imu_to_base_link.has_value()) {
+        continue;
+      }
+      distortion_corrector_->set_imu_transform(*imu_to_base_link);
+      distortion_corrector_->process_imu_message(msg);
     }
   }
 
-  distortion_corrector_->set_pointcloud_transform(base_frame_, pointcloud_msg->header.frame_id);
+  const auto lidar_to_base_link =
+    managed_tf_buffer_->getTransform<geometry_msgs::msg::TransformStamped>(
+      base_frame_, pointcloud_msg->header.frame_id, this->now(),
+      rclcpp::Duration::from_seconds(1.0), this->get_logger());
+  if (lidar_to_base_link.has_value()) {
+    distortion_corrector_->set_pointcloud_transform(*lidar_to_base_link);
+  }
 
   if (update_azimuth_and_distance_ && !angle_conversion_opt_.has_value()) {
     angle_conversion_opt_ = distortion_corrector_->try_compute_angle_conversion(*pointcloud_msg);
