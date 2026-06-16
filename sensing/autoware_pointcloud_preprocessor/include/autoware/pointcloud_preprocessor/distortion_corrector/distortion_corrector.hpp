@@ -49,6 +49,25 @@ struct AngleConversion
   static constexpr float sign_threshold{0.1f};
 };
 
+// Reason why an input pointcloud was rejected. Reported to the caller instead of being logged, so
+// that the core stays free of ROS logging.
+enum class PointcloudValidity {
+  kValid,
+  kEmpty,
+  kMissingTimeStampField,
+  kIncompatibleLayout,
+};
+
+// Outcome of undistort_pointcloud(). Conditions that the node used to log directly are surfaced
+// here so the (ROS-free) core can report them to its caller.
+struct UndistortionResult
+{
+  PointcloudValidity validity{PointcloudValidity::kValid};
+  bool twist_queue_empty{false};
+  bool twist_timestamp_too_late{false};
+  bool imu_timestamp_too_late{false};
+};
+
 class DistortionCorrectorBase
 {
 protected:
@@ -72,8 +91,6 @@ protected:
     bool use_imu, double first_point_time_stamp_sec,
     std::deque<geometry_msgs::msg::TwistStamped>::iterator & it_twist,
     std::deque<geometry_msgs::msg::Vector3Stamped>::iterator & it_imu);
-  void warn_if_timestamp_is_too_late(
-    bool is_twist_time_stamp_too_late, bool is_imu_time_stamp_too_late);
   static tf2::Transform convert_matrix_to_transform(const Eigen::Matrix4f & matrix);
 
 public:
@@ -97,7 +114,7 @@ public:
   std::optional<AngleConversion> try_compute_angle_conversion(
     sensor_msgs::msg::PointCloud2 & pointcloud);
 
-  bool is_pointcloud_valid(sensor_msgs::msg::PointCloud2 & pointcloud);
+  PointcloudValidity is_pointcloud_valid(sensor_msgs::msg::PointCloud2 & pointcloud);
 
   [[nodiscard]] int get_timestamp_mismatch_count() const { return timestamp_mismatch_count_; }
   [[nodiscard]] double get_timestamp_mismatch_fraction() const
@@ -108,7 +125,7 @@ public:
   virtual void set_pointcloud_transform(
     const std::string & base_frame, const std::string & lidar_frame) = 0;
   virtual void initialize() = 0;
-  virtual void undistort_pointcloud(
+  virtual UndistortionResult undistort_pointcloud(
     bool use_imu, std::optional<AngleConversion> angle_conversion_opt,
     sensor_msgs::msg::PointCloud2 & pointcloud) = 0;
 };
@@ -119,7 +136,7 @@ class DistortionCorrector : public DistortionCorrectorBase
 public:
   explicit DistortionCorrector(rclcpp::Node & node) : DistortionCorrectorBase(node) {}
 
-  void undistort_pointcloud(
+  UndistortionResult undistort_pointcloud(
     bool use_imu, std::optional<AngleConversion> angle_conversion_opt,
     sensor_msgs::msg::PointCloud2 & pointcloud) override;
 

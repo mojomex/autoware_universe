@@ -380,12 +380,12 @@ TEST_F(DistortionCorrectorTest, TestIsPointcloudValid)
     generate_default_pointcloud(AngleCoordinateSystem::CARTESIAN);
   auto pointcloud = generate_pointcloud_msg(false, timestamp, default_points, default_azimuths);
   auto result = distortion_corrector_2d_->is_pointcloud_valid(pointcloud);
-  EXPECT_TRUE(result);
+  EXPECT_EQ(result, autoware::pointcloud_preprocessor::PointcloudValidity::kValid);
 
   // input empty pointcloud
   auto empty_pointcloud = generate_empty_pointcloud_msg(timestamp);
   result = distortion_corrector_2d_->is_pointcloud_valid(empty_pointcloud);
-  EXPECT_FALSE(result);
+  EXPECT_EQ(result, autoware::pointcloud_preprocessor::PointcloudValidity::kEmpty);
 }
 
 TEST_F(DistortionCorrectorTest, TestSetPointcloudTransformWithBaseLink)

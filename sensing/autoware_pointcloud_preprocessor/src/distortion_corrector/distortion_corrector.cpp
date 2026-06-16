@@ -156,39 +156,25 @@ void DistortionCorrectorBase::get_twist_and_imu_iterator(
   }
 }
 
-bool DistortionCorrectorBase::is_pointcloud_valid(sensor_msgs::msg::PointCloud2 & pointcloud)
+PointcloudValidity DistortionCorrectorBase::is_pointcloud_valid(
+  sensor_msgs::msg::PointCloud2 & pointcloud)
 {
   if (pointcloud.data.empty()) {
-    RCLCPP_WARN_STREAM_THROTTLE(
-      node_.get_logger(), *node_.get_clock(), 10000 /* ms */, "Input pointcloud is empty.");
-    return false;
+    return PointcloudValidity::kEmpty;
   }
 
   auto time_stamp_field_it = std::find_if(
     std::cbegin(pointcloud.fields), std::cend(pointcloud.fields),
     [](const sensor_msgs::msg::PointField & field) { return field.name == "time_stamp"; });
   if (time_stamp_field_it == pointcloud.fields.cend()) {
-    RCLCPP_WARN_STREAM_THROTTLE(
-      node_.get_logger(), *node_.get_clock(), 10000 /* ms */,
-      "Required field time stamp doesn't exist in the point cloud.");
-    return false;
+    return PointcloudValidity::kMissingTimeStampField;
   }
 
   if (!utils::is_data_layout_compatible_with_point_xyzircaedt(pointcloud)) {
-    RCLCPP_ERROR(
-      node_.get_logger(), "The pointcloud layout is not compatible with PointXYZIRCAEDT. Aborting");
-
-    if (utils::is_data_layout_compatible_with_point_xyziradrt(pointcloud)) {
-      RCLCPP_ERROR(
-        node_.get_logger(),
-        "The pointcloud layout is compatible with PointXYZIRADRT. You may be using legacy "
-        "code/data");
-    }
-
-    return false;
+    return PointcloudValidity::kIncompatibleLayout;
   }
 
-  return true;
+  return PointcloudValidity::kValid;
 }
 
 std::optional<AngleConversion> DistortionCorrectorBase::try_compute_angle_conversion(
@@ -197,7 +183,7 @@ std::optional<AngleConversion> DistortionCorrectorBase::try_compute_angle_conver
   // This function tries to compute the angle conversion from Cartesian coordinates to LiDAR azimuth
   // coordinates system
 
-  if (!is_pointcloud_valid(pointcloud)) return std::nullopt;
+  if (is_pointcloud_valid(pointcloud) != PointcloudValidity::kValid) return std::nullopt;
 
   AngleConversion angle_conversion;
 
@@ -214,9 +200,7 @@ std::optional<AngleConversion> DistortionCorrectorBase::try_compute_angle_conver
     next_it_y = it_y + 1;
     next_it_azimuth = it_azimuth + 1;
   } else {
-    RCLCPP_WARN_STREAM_THROTTLE(
-      node_.get_logger(), *node_.get_clock(), 10000 /* ms */,
-      "Current point cloud only has a single point. Could not calculate the angle conversion.");
+    // Current point cloud only has a single point; cannot calculate the angle conversion.
     return std::nullopt;
   }
 
@@ -230,9 +214,7 @@ std::optional<AngleConversion> DistortionCorrectorBase::try_compute_angle_conver
     if (
       std::abs(*next_it_azimuth - *it_azimuth) == 0 ||
       std::abs(next_cartesian_rad - current_cartesian_rad) == 0) {
-      RCLCPP_DEBUG_STREAM_THROTTLE(
-        node_.get_logger(), *node_.get_clock(), 10000 /* ms */,
-        "Angle between two points is 0 degrees. Iterate to next point ...");
+      // Angle between two points is 0 degrees. Iterate to next point.
       continue;
     }
 
@@ -253,9 +235,7 @@ std::optional<AngleConversion> DistortionCorrectorBase::try_compute_angle_conver
     } else if (std::abs(sign + 1.0f) <= angle_conversion.sign_threshold) {
       angle_conversion.sign = -1.0f;
     } else {
-      RCLCPP_DEBUG_STREAM_THROTTLE(
-        node_.get_logger(), *node_.get_clock(), 10000 /* ms */,
-        "Value of sign is not close to 1 or -1. Iterate to next point ...");
+      // Value of sign is not close to 1 or -1. Iterate to next point.
       continue;
     }
 
@@ -265,10 +245,7 @@ std::optional<AngleConversion> DistortionCorrectorBase::try_compute_angle_conver
     if (
       std::abs(offset_rad - multiple_of_90_degrees * (autoware_utils::pi / 2)) >
       angle_conversion.offset_rad_threshold) {
-      RCLCPP_DEBUG_STREAM_THROTTLE(
-        node_.get_logger(), *node_.get_clock(), 10000 /* ms */,
-        "Value of offset_rad is not close to multiplication of 90 degrees. Iterate to next point "
-        "...");
+      // Value of offset_rad is not close to a multiple of 90 degrees. Iterate to next point.
       continue;
     }
 
@@ -280,22 +257,6 @@ std::optional<AngleConversion> DistortionCorrectorBase::try_compute_angle_conver
     return angle_conversion;
   }
   return std::nullopt;
-}
-
-void DistortionCorrectorBase::warn_if_timestamp_is_too_late(
-  bool is_twist_time_stamp_too_late, bool is_imu_time_stamp_too_late)
-{
-  if (is_twist_time_stamp_too_late) {
-    RCLCPP_WARN_STREAM_THROTTLE(
-      node_.get_logger(), *node_.get_clock(), 10000 /* ms */,
-      "Twist time_stamp is too late. Could not interpolate.");
-  }
-
-  if (is_imu_time_stamp_too_late) {
-    RCLCPP_WARN_STREAM_THROTTLE(
-      node_.get_logger(), *node_.get_clock(), 10000 /* ms */,
-      "IMU time_stamp is too late. Could not interpolate.");
-  }
 }
 
 tf2::Transform DistortionCorrectorBase::convert_matrix_to_transform(const Eigen::Matrix4f & matrix)
@@ -310,21 +271,23 @@ tf2::Transform DistortionCorrectorBase::convert_matrix_to_transform(const Eigen:
 }
 
 template <class T>
-void DistortionCorrector<T>::undistort_pointcloud(
+UndistortionResult DistortionCorrector<T>::undistort_pointcloud(
   bool use_imu, std::optional<AngleConversion> angle_conversion_opt,
   sensor_msgs::msg::PointCloud2 & pointcloud)
 {
+  UndistortionResult result;
+
   timestamp_mismatch_count_ = 0;
   timestamp_mismatch_fraction_ = 0.0;
 
   // Reset the per-cloud undistortion state so callers don't need to call initialize() themselves.
   static_cast<T *>(this)->initialize();
 
-  if (!is_pointcloud_valid(pointcloud)) return;
+  result.validity = is_pointcloud_valid(pointcloud);
+  if (result.validity != PointcloudValidity::kValid) return result;
   if (twist_queue_.empty()) {
-    RCLCPP_WARN_STREAM_THROTTLE(
-      node_.get_logger(), *node_.get_clock(), 10000 /* ms */, "Twist queue is empty.");
-    return;
+    result.twist_queue_empty = true;
+    return result;
   }
 
   sensor_msgs::PointCloud2Iterator<float> it_x(pointcloud, "x");
@@ -425,7 +388,9 @@ void DistortionCorrector<T>::undistort_pointcloud(
                                                       static_cast<float>(total_points)
                                                   : 0.0f;
 
-  warn_if_timestamp_is_too_late(is_twist_time_stamp_too_late, is_imu_time_stamp_too_late);
+  result.twist_timestamp_too_late = is_twist_time_stamp_too_late;
+  result.imu_timestamp_too_late = is_imu_time_stamp_too_late;
+  return result;
 }
 
 ///////////////////////// Functions for different undistortion strategies /////////////////////////

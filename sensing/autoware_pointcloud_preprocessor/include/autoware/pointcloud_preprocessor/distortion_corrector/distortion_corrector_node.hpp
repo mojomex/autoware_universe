@@ -73,6 +73,7 @@ private:
   std::unique_ptr<autoware_utils::DiagnosticsInterface> diagnostics_interface_;
 
   void pointcloud_callback(PointCloud2::UniquePtr pointcloud_msg);
+  void log_undistortion_result(const UndistortionResult & result, const PointCloud2 & pointcloud);
   void publish_diagnostics(const std::vector<std::shared_ptr<const DiagnosticsBase>> & diagnostics);
 };
 
