@@ -96,16 +96,17 @@ protected:
   }
 
   // Transforms previously looked up from TF and now injected directly into the corrector.
+  // The rotations are unit quaternions (as TF provides); the corrector assumes normalized input.
   static geometry_msgs::msg::TransformStamped get_lidar_to_base_link_transform()
   {
     return generate_transform_msg(
-      "base_link", "lidar_top", 5.0, 5.0, 5.0, 0.683, 0.5, 0.183, 0.499);
+      "base_link", "lidar_top", 5.0, 5.0, 5.0, 0.68334894, 0.50025545, 0.18309349, 0.49925493);
   }
 
   static geometry_msgs::msg::TransformStamped get_imu_to_base_link_transform()
   {
     return generate_transform_msg(
-      "base_link", "imu_link", 1.0, 1.0, 3.0, 0.278, 0.717, 0.441, 0.453);
+      "base_link", "imu_link", 1.0, 1.0, 3.0, 0.27925063, 0.72022555, 0.44298392, 0.4550379);
   }
 
   static geometry_msgs::msg::TransformStamped get_base_link_transform()
