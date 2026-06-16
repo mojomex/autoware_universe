@@ -106,7 +106,7 @@ public:
   std::optional<AngleConversion> try_compute_angle_conversion(
     sensor_msgs::msg::PointCloud2 & pointcloud);
 
-  PointcloudValidity is_pointcloud_valid(sensor_msgs::msg::PointCloud2 & pointcloud);
+  PointcloudValidity check_pointcloud_validity(sensor_msgs::msg::PointCloud2 & pointcloud);
 
   [[nodiscard]] int get_timestamp_mismatch_count() const { return timestamp_mismatch_count_; }
   [[nodiscard]] double get_timestamp_mismatch_fraction() const

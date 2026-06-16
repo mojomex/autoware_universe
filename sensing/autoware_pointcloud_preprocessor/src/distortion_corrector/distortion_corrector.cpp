@@ -147,7 +147,7 @@ void DistortionCorrectorBase::get_twist_and_imu_iterator(
   }
 }
 
-PointcloudValidity DistortionCorrectorBase::is_pointcloud_valid(
+PointcloudValidity DistortionCorrectorBase::check_pointcloud_validity(
   sensor_msgs::msg::PointCloud2 & pointcloud)
 {
   if (pointcloud.data.empty()) {
@@ -174,7 +174,7 @@ std::optional<AngleConversion> DistortionCorrectorBase::try_compute_angle_conver
   // This function tries to compute the angle conversion from Cartesian coordinates to LiDAR azimuth
   // coordinates system
 
-  if (is_pointcloud_valid(pointcloud) != PointcloudValidity::kValid) return std::nullopt;
+  if (check_pointcloud_validity(pointcloud) != PointcloudValidity::kValid) return std::nullopt;
 
   AngleConversion angle_conversion;
 
@@ -263,7 +263,7 @@ UndistortionResult DistortionCorrector<T>::undistort_pointcloud(
   // Reset the per-cloud undistortion state so callers don't need to call initialize() themselves.
   static_cast<T *>(this)->initialize();
 
-  result.validity = is_pointcloud_valid(pointcloud);
+  result.validity = check_pointcloud_validity(pointcloud);
   if (result.validity != PointcloudValidity::kValid) return result;
   if (twist_queue_.empty()) {
     result.twist_queue_empty = true;

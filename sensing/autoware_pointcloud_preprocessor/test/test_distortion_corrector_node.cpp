@@ -370,19 +370,19 @@ TEST_F(DistortionCorrectorTest, TestProcessImuMessage)
     standard_tolerance);
 }
 
-TEST_F(DistortionCorrectorTest, TestIsPointcloudValid)
+TEST_F(DistortionCorrectorTest, TestCheckPointcloudValidity)
 {
   rclcpp::Time timestamp(timestamp_seconds, timestamp_nanoseconds, RCL_ROS_TIME);
 
   auto [default_points, default_azimuths] =
     generate_default_pointcloud(AngleCoordinateSystem::CARTESIAN);
   auto pointcloud = generate_pointcloud_msg(false, timestamp, default_points, default_azimuths);
-  auto result = distortion_corrector_2d_->is_pointcloud_valid(pointcloud);
+  auto result = distortion_corrector_2d_->check_pointcloud_validity(pointcloud);
   EXPECT_EQ(result, autoware::pointcloud_preprocessor::PointcloudValidity::kValid);
 
   // input empty pointcloud
   auto empty_pointcloud = generate_empty_pointcloud_msg(timestamp);
-  result = distortion_corrector_2d_->is_pointcloud_valid(empty_pointcloud);
+  result = distortion_corrector_2d_->check_pointcloud_validity(empty_pointcloud);
   EXPECT_EQ(result, autoware::pointcloud_preprocessor::PointcloudValidity::kEmpty);
 }
 
