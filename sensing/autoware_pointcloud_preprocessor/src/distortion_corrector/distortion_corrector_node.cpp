@@ -110,7 +110,6 @@ void DistortionCorrectorComponent::pointcloud_callback(PointCloud2::UniquePtr po
   }
 
   distortion_corrector_->set_pointcloud_transform(base_frame_, pointcloud_msg->header.frame_id);
-  distortion_corrector_->initialize();
 
   if (update_azimuth_and_distance_ && !angle_conversion_opt_.has_value()) {
     angle_conversion_opt_ = distortion_corrector_->try_compute_angle_conversion(*pointcloud_msg);

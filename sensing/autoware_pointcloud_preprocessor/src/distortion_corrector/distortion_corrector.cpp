@@ -317,6 +317,9 @@ void DistortionCorrector<T>::undistort_pointcloud(
   timestamp_mismatch_count_ = 0;
   timestamp_mismatch_fraction_ = 0.0;
 
+  // Reset the per-cloud undistortion state so callers don't need to call initialize() themselves.
+  static_cast<T *>(this)->initialize();
+
   if (!is_pointcloud_valid(pointcloud)) return;
   if (twist_queue_.empty()) {
     RCLCPP_WARN_STREAM_THROTTLE(
