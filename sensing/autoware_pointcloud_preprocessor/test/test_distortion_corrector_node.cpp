@@ -98,12 +98,14 @@ protected:
   // Transforms previously looked up from TF and now injected directly into the corrector.
   static geometry_msgs::msg::TransformStamped get_lidar_to_base_link_transform()
   {
-    return generate_transform_msg("base_link", "lidar_top", 5.0, 5.0, 5.0, 0.683, 0.5, 0.183, 0.499);
+    return generate_transform_msg(
+      "base_link", "lidar_top", 5.0, 5.0, 5.0, 0.683, 0.5, 0.183, 0.499);
   }
 
   static geometry_msgs::msg::TransformStamped get_imu_to_base_link_transform()
   {
-    return generate_transform_msg("base_link", "imu_link", 1.0, 1.0, 3.0, 0.278, 0.717, 0.441, 0.453);
+    return generate_transform_msg(
+      "base_link", "imu_link", 1.0, 1.0, 3.0, 0.278, 0.717, 0.441, 0.453);
   }
 
   static geometry_msgs::msg::TransformStamped get_base_link_transform()
