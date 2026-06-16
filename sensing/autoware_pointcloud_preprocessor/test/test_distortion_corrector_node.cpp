@@ -53,9 +53,9 @@ protected:
   {
     node_ = std::make_shared<rclcpp::Node>("test_node");
     distortion_corrector_2d_ =
-      std::make_shared<autoware::pointcloud_preprocessor::DistortionCorrector2D>(*node_);
+      std::make_shared<autoware::pointcloud_preprocessor::DistortionCorrector2D>();
     distortion_corrector_3d_ =
-      std::make_shared<autoware::pointcloud_preprocessor::DistortionCorrector3D>(*node_);
+      std::make_shared<autoware::pointcloud_preprocessor::DistortionCorrector3D>();
   }
 
   void TearDown() override {}

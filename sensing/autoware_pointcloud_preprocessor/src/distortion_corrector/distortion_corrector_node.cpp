@@ -77,9 +77,9 @@ DistortionCorrectorComponent::DistortionCorrectorComponent(const rclcpp::NodeOpt
   // Setup the distortion corrector
 
   if (use_3d_distortion_correction_) {
-    distortion_corrector_ = std::make_unique<DistortionCorrector3D>(*this);
+    distortion_corrector_ = std::make_unique<DistortionCorrector3D>();
   } else {
-    distortion_corrector_ = std::make_unique<DistortionCorrector2D>(*this);
+    distortion_corrector_ = std::make_unique<DistortionCorrector2D>();
   }
 
   // Transform buffer used to look up the sensor/IMU extrinsics injected into the corrector.

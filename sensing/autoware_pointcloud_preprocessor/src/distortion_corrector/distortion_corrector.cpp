@@ -18,6 +18,8 @@
 #include "autoware_utils/math/constants.hpp"
 
 #include <autoware_utils/math/trigonometry.hpp>
+#include <rclcpp/duration.hpp>
+#include <rclcpp/time.hpp>
 #include <tf2_eigen/tf2_eigen.hpp>
 
 #include <deque>

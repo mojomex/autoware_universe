@@ -16,7 +16,6 @@
 #define AUTOWARE__POINTCLOUD_PREPROCESSOR__DISTORTION_CORRECTOR__DISTORTION_CORRECTOR_HPP_
 
 #include <Eigen/Core>
-#include <rclcpp/rclcpp.hpp>
 #include <sophus/se3.hpp>
 #include <tf2/LinearMath/Transform.hpp>
 #include <tf2/convert.hpp>
@@ -31,6 +30,7 @@
 
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace autoware::pointcloud_preprocessor
@@ -80,8 +80,6 @@ protected:
   int timestamp_mismatch_count_{0};
   double timestamp_mismatch_fraction_{0.0};
 
-  rclcpp::Node & node_;
-
   void enqueue_imu(const sensor_msgs::msg::Imu::ConstSharedPtr imu_msg);
   void get_twist_and_imu_iterator(
     bool use_imu, double first_point_time_stamp_sec,
@@ -89,8 +87,7 @@ protected:
     std::deque<geometry_msgs::msg::Vector3Stamped>::iterator & it_imu);
 
 public:
-  explicit DistortionCorrectorBase(rclcpp::Node & node) : node_(node) {}
-
+  DistortionCorrectorBase() = default;
   virtual ~DistortionCorrectorBase() = default;
 
   [[nodiscard]] bool pointcloud_transform_exists() const;
@@ -131,8 +128,6 @@ template <class T>
 class DistortionCorrector : public DistortionCorrectorBase
 {
 public:
-  explicit DistortionCorrector(rclcpp::Node & node) : DistortionCorrectorBase(node) {}
-
   UndistortionResult undistort_pointcloud(
     bool use_imu, std::optional<AngleConversion> angle_conversion_opt,
     sensor_msgs::msg::PointCloud2 & pointcloud) override;
@@ -166,7 +161,6 @@ private:
   tf2::Transform tf2_base_link_to_lidar_;
 
 public:
-  explicit DistortionCorrector2D(rclcpp::Node & node) : DistortionCorrector(node) {}
   void initialize() override;
   void set_pointcloud_transform(
     const geometry_msgs::msg::TransformStamped & lidar_to_base_link) override;
@@ -192,7 +186,6 @@ private:
   Eigen::Matrix4f eigen_base_link_to_lidar_;
 
 public:
-  explicit DistortionCorrector3D(rclcpp::Node & node) : DistortionCorrector(node) {}
   void initialize() override;
   void set_pointcloud_transform(
     const geometry_msgs::msg::TransformStamped & lidar_to_base_link) override;
