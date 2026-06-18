@@ -91,6 +91,8 @@ private:
   autoware::cuda_utils::CudaUniquePtr<std::int64_t[]> pooling_sorted_indices_d_{nullptr};
   autoware::cuda_utils::CudaUniquePtr<std::int64_t[]> pooling_run_flags_d_{nullptr};
   autoware::cuda_utils::CudaUniquePtr<std::int64_t[]> pooling_run_ids_d_{nullptr};
+  autoware::cuda_utils::CudaUniquePtr<std::int64_t[]> sorted_original_indices_d_{nullptr};
+  autoware::cuda_utils::CudaUniquePtr<std::int64_t[]> original_to_current_indices_d_{nullptr};
   autoware::cuda_utils::CudaUniquePtr<std::uint8_t[]> pooling_workspace_d_{nullptr};
   std::size_t pooling_workspace_size_{0};
 };
