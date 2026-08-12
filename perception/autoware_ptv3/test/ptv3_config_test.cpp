@@ -26,10 +26,11 @@ namespace test
 
 PTv3Config makeDetectionConfig(
   const std::vector<float> & point_cloud_range = {0.0F, 0.0F, 0.0F, 16.0F, 16.0F, 4.0F},
-  const std::vector<float> & bbox_voxel_size = {8.0F, 8.0F, 4.0F})
+  const std::vector<float> & bbox_voxel_size = {8.0F, 8.0F, 4.0F},
+  const std::vector<float> & voxel_size = {1.0F, 1.0F, 1.0F})
 {
   return PTv3Config(
-    false, true, "", 8, {1, 4, 8}, point_cloud_range, {1.0F, 1.0F, 1.0F}, {}, {"z", "z-trans"},
+    false, true, "", 8, {1, 4, 8}, point_cloud_range, voxel_size, {}, {"z", "z-trans"},
     {2, 2, 2, 2}, {8, 16, 32, 64, 128}, {}, {}, "", false, "", {}, {"CAR", "PEDESTRIAN"},
     bbox_voxel_size, {10.0F, 20.0F}, {0.1F, 0.2F, 0.3F, 0.4F}, {0.1F, 0.2F}, true, 8,
     {-2.0F, -2.0F, -2.0F, 4.0F, 4.0F, 4.0F});
@@ -65,6 +66,17 @@ TEST(PTv3ConfigTest, SerializationDepthCoversUnalignedRangeBoundary)
 
   const auto unaligned = makeDetectionConfig({0.5F, 0.5F, 0.5F, 16.5F, 16.5F, 4.5F});
   EXPECT_EQ(unaligned.serialization_depth_, 5);
+}
+
+// Borders that are voxel-aligned in decimal but not exactly representable in binary (neither 102.4
+// nor 0.1 is a binary float) must not gain a spurious extra coordinate from rounding: the depth is
+// derived from the same float division and floor the device mapping executes, which lands exactly
+// on the 2048 aligned cells here.
+TEST(PTv3ConfigTest, SerializationDepthStaysExactForBase10AlignedRanges)
+{
+  const auto config = makeDetectionConfig(
+    {-102.4F, -102.4F, -0.4F, 102.4F, 102.4F, 0.4F}, {0.8F, 0.8F, 4.0F}, {0.1F, 0.1F, 0.1F});
+  EXPECT_EQ(config.serialization_depth_, 11);
 }
 
 }  // namespace test
