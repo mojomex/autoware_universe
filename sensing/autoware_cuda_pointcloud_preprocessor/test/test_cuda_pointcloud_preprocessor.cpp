@@ -23,6 +23,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
 
+#include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
 #include <cstring>
@@ -152,6 +153,52 @@ std::shared_ptr<const geometry_msgs::msg::TwistWithCovarianceStamped> make_twist
 std::shared_ptr<const sensor_msgs::msg::Imu> make_imu_ptr(const std::uint32_t nanosec)
 {
   return std::make_shared<sensor_msgs::msg::Imu>(make_imu(nanosec));
+}
+
+// `points_per_ring` points on each of `ring_count` rings, distinct in every field so that a point
+// landing in the wrong slot, or a stale one surviving, shows up in the output. Neighbours on a
+// ring are 1 cm apart and at similar distances, so the ring outlier filter keeps them.
+std::vector<InputPointType> make_ring_points(const int ring_count, const int points_per_ring)
+{
+  std::vector<InputPointType> points;
+  points.reserve(static_cast<std::size_t>(ring_count) * points_per_ring);
+  for (int i = 0; i < points_per_ring; ++i) {
+    for (int ring = 0; ring < ring_count; ++ring) {
+      auto point = make_point(1.0F + 0.01F * i, i, ring);
+      point.y = 0.1F * ring;
+      point.intensity = static_cast<std::uint8_t>(i);
+      points.push_back(point);
+    }
+  }
+  return points;
+}
+
+struct ProcessedCloud
+{
+  std::uint32_t width{};
+  std::vector<std::uint8_t> data;
+  ProcessingStats stats;
+};
+
+ProcessedCloud process_cloud(
+  CudaPointcloudPreprocessor & preprocessor, const sensor_msgs::msg::PointCloud2 & input_cloud)
+{
+  const auto output_cloud = preprocessor.process(
+    input_cloud, make_identity_transform(),
+    std::deque<geometry_msgs::msg::TwistWithCovarianceStamped>{},
+    std::deque<geometry_msgs::msg::Vector3Stamped>{}, 0U);
+  ProcessedCloud processed;
+  processed.width = output_cloud->width;
+  processed.data.resize(output_cloud->row_step);
+  if (!processed.data.empty()) {
+    cudaMemcpy(
+      processed.data.data(), output_cloud->data.get(), processed.data.size(),
+      cudaMemcpyDeviceToHost);
+  }
+  processed.stats = preprocessor.getProcessingStats();
+  // The node hands the published cloud back the same way.
+  preprocessor.preallocateOutput();
+  return processed;
 }
 
 // Constructing a CudaPointcloudPreprocessor allocates device memory, so the cases
@@ -352,6 +399,73 @@ TEST(QueueBounds, RejectsAlreadyOverCapacityInternalQueue)
   std::vector<geometry_msgs::msg::TwistWithCovarianceStamped::ConstSharedPtr> messages;
 
   EXPECT_THROW(detail::prepare_queue_update(queue, messages, 2U, 100U), std::runtime_error);
+}
+
+// A frame must come out the same whether or not larger frames were processed before it: the
+// buffers are sized to the capacity and keep whatever earlier frames wrote there, so a frame
+// that grows the organized extent, one that shrinks back below it, a truncated one and a
+// normal one are each compared against a fresh preprocessor's output for the same input.
+TEST_F(CudaPointcloudPreprocessorDeviceTest, OutputDoesNotDependOnEarlierLargerFrames)
+{
+  constexpr int ring_count = 2;
+  constexpr int max_points_per_ring = 1024;
+  const auto capacity = make_capacity(1800, ring_count, max_points_per_ring);
+  const auto configure = [](CudaPointcloudPreprocessor & preprocessor) {
+    CropBoxParameters crop_box{};
+    crop_box.min_x = -100.0F;
+    crop_box.max_x = 100.0F;
+    crop_box.min_y = -100.0F;
+    crop_box.max_y = 100.0F;
+    crop_box.min_z = -100.0F;
+    crop_box.max_z = 100.0F;
+    crop_box.negative = false;
+    preprocessor.setCropBoxParameters({crop_box});
+    RingOutlierFilterParameters ring_outlier_parameters{};
+    ring_outlier_parameters.distance_ratio = 1.03F;
+    ring_outlier_parameters.object_length_threshold = 0.05F;
+    preprocessor.setRingOutlierFilterParameters(ring_outlier_parameters);
+    preprocessor.setRingOutlierFilterActive(true);
+    preprocessor.setUndistortionType(CudaPointcloudPreprocessor::UndistortionType::Undistortion2D);
+  };
+
+  // Points per ring: small, growing past the initial organized extent, shrinking well below
+  // it, one truncated to `max_input_point_count` (2 x 950 > 1800), one overflowing
+  // `max_points_per_ring` (1050 in ring 0 alone), and a normal frame again.
+  const std::vector<std::vector<InputPointType>> frames = {
+    make_ring_points(ring_count, 300), make_ring_points(ring_count, 700),
+    make_ring_points(ring_count, 100), make_ring_points(ring_count, 950),
+    make_ring_points(1, 1050),         make_ring_points(ring_count, 300)};
+  constexpr std::size_t ring_overflow_frame = 4;
+
+  CudaPointcloudPreprocessor sequenced{capacity};
+  configure(sequenced);
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    const auto input_cloud = make_input_cloud(frames.at(i));
+    const auto from_sequence = process_cloud(sequenced, input_cloud);
+
+    CudaPointcloudPreprocessor fresh{capacity};
+    configure(fresh);
+    const auto from_fresh = process_cloud(fresh, input_cloud);
+
+    ASSERT_GT(from_fresh.width, 0U) << "frame " << i;
+    EXPECT_EQ(from_sequence.stats.ring_overflow, i == ring_overflow_frame) << "frame " << i;
+    EXPECT_EQ(from_sequence.stats.ring_overflow, from_fresh.stats.ring_overflow) << "frame " << i;
+    if (i == ring_overflow_frame) {
+      // Which points a ring past `max_points_per_ring` keeps is decided by the order the organize
+      // kernel's atomic increments happen in, so two runs of the same frame need not agree; only
+      // the bound does.
+      EXPECT_LE(from_sequence.width, static_cast<std::uint32_t>(max_points_per_ring));
+      EXPECT_LE(from_fresh.width, static_cast<std::uint32_t>(max_points_per_ring));
+      continue;
+    }
+    EXPECT_EQ(from_sequence.width, from_fresh.width) << "frame " << i;
+    EXPECT_EQ(from_sequence.data, from_fresh.data) << "frame " << i;
+    EXPECT_EQ(
+      from_sequence.stats.num_crop_box_passed_points, from_fresh.stats.num_crop_box_passed_points)
+      << "frame " << i;
+    EXPECT_EQ(from_sequence.stats.num_nan_points, from_fresh.stats.num_nan_points) << "frame " << i;
+    EXPECT_EQ(from_sequence.stats.mismatch_count, from_fresh.stats.mismatch_count) << "frame " << i;
+  }
 }
 
 TEST_F(CudaPointcloudPreprocessorDeviceTest, TruncatesInputCloudToConfiguredMaximum)
