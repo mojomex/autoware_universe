@@ -34,8 +34,9 @@ __global__ void organizeKernel(
 
   auto ring = input_points[idx].channel;
 
-  // The two outputs are flags: they are reset to 0 every frame and only raised here, so a
-  // non-zero value means at least one point did not fit and was dropped.
+  // Both outputs are reset to 0 every frame and only written here, so a non-zero value means at
+  // least one point did not fit and was dropped. The points-per-ring one also carries the
+  // smallest per-ring extent that would have fit every point, for the caller to widen to.
   if (ring >= initial_max_rings) {
     atomicOr(output_rings_overflowed, 1);
     return;
@@ -44,7 +45,7 @@ __global__ void organizeKernel(
   int next_offset = atomicAdd(&ring_indexes[ring], 1);
 
   if (next_offset >= initial_max_points_per_ring) {
-    atomicOr(output_points_per_ring_overflowed, 1);
+    atomicMax(output_points_per_ring_overflowed, next_offset + 1);
     return;
   }
 
@@ -70,7 +71,7 @@ __global__ void gatherKernel(
     output_points[ring * max_points_per_ring + point] = input_points[input_idx];
     is_valid_point[idx] = true;
   } else {
-    output_points[ring * max_points_per_ring + point].distance = 0.0f;
+    output_points[ring * max_points_per_ring + point] = InputPointType{};
     is_valid_point[idx] = false;
   }
 }

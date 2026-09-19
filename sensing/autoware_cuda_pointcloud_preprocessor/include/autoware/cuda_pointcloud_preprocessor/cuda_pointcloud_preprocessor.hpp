@@ -81,6 +81,7 @@ private:
   static cudaStream_t initialize_stream();
 
   void initializeBuffers();
+  void setMaxPointsPerRing(const int max_points_per_ring);
   void organizePointcloud();
 
   CropBoxParameters self_crop_box_parameters_{};
@@ -91,6 +92,12 @@ private:
 
   PreprocessorCapacity capacity_{};
   int num_rings_{};
+  // Per-ring extent of the organized layout this frame is processed with: the largest
+  // per-ring point count seen so far, rounded up to points_per_ring_granularity and capped at
+  // capacity_.max_points_per_ring. The buffers always hold the capacity; the kernels only
+  // cover num_organized_points_ = num_rings_ * max_points_per_ring_.
+  static constexpr int initial_max_points_per_ring = 512;
+  static constexpr int points_per_ring_granularity = 512;
   int max_points_per_ring_{};
   std::size_t num_organized_points_{};
   std::size_t num_raw_points_{};
